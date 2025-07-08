@@ -1,7 +1,7 @@
 # Placeholder for ctds_emissions.py
 import jax.numpy as jnp
 from typing import Tuple, Optional
-from models.components.constraints import clip_matrix
+from models.components.constraints import clip_matrix, apply_dale_constraint, apply_block_sparsity
 
 
 class CTDSEmissions:
@@ -9,7 +9,7 @@ class CTDSEmissions:
     Encapsulates CTDS-specific emission structure:
       - Block-sparsity by region and cell type
       - Positive weights constraint (clip)
-      - Optional normalization
+      - Optional normalization 
     """
     def __init__(
         self,
@@ -27,7 +27,7 @@ class CTDSEmissions:
             region_identity: (D,) values in 0..R-1, default all zeros
             base_strength: initial emission weight magnitude
             noise_scale: observation noise variance
-            normalize: whether to normalize each neuron’s loading vector
+            normalize: whether to normalize each neuron
         """
         self.cell_identity = cell_identity.astype(int)
         self.list_of_dimensions = list_of_dimensions.astype(int)
@@ -79,7 +79,7 @@ class CTDSEmissions:
 
     def build(self) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """
-        Build emission parameters (C, R).
+        build emission parameters (C, R).
 
         Returns:
             C: (D, K) emission weight matrix
@@ -95,4 +95,47 @@ class CTDSEmissions:
         C = clip_matrix(C, min_val=0.0, max_val=jnp.inf)
         D = C.shape[0]
         R = jnp.eye(D) * self.noise_scale
+        return C, R
+     
+    def m_step(self, posterior, Y: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        """
+        M-step for emissions: estimate readout matrix C and noise covariance R.
+
+        Args:
+            posterior: dict of smoothed moments:
+                - "Ex": (T, D) posterior mean of latents
+                - "Exx": (T, D, D) posterior 2nd moment of latents
+            Y: (T, N) observed neural activity
+
+        Returns:
+            C: (N, D) emission matrix
+            R: (N, N) noise covariance (diagonal)
+        """
+        Ex = posterior["Ex"]            # (T, D)
+        Exx = posterior["Exx"]          # (T, D, D)
+        T, N = Y.shape
+        D = Ex.shape[1]
+
+        # Closed-form solution: C = (Yᵀ Ex) (∑ Exx)^-1
+        S_yx = Y.T @ Ex                 # (N, D)
+        S_xx = jnp.sum(Exx, axis=0)     # (D, D)
+        C = S_yx @ jnp.linalg.inv(S_xx) # (N, D)
+
+        # Apply optional constraints
+        if self.sparse:
+            mask = jnp.ones_like(C)  # TODO: load actual mask if needed
+            C = apply_block_sparsity(C, mask)
+
+        if self.dale:
+            C = apply_dale_constraint(C, self.cell_type_identity)
+
+        if self.unit_norm:
+            C = project_to_unit_norm(C, axis=1)
+
+        # Estimate R: empirical residual covariance
+        Y_hat = Ex @ C.T                # (T, N)
+        residuals = Y - Y_hat
+        R_diag = jnp.mean(residuals ** 2, axis=0)  # (N,)
+        R = jnp.diag(R_diag + self.noise_scale)    # (N, N)
+
         return C, R

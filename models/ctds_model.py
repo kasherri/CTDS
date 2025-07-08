@@ -1,6 +1,5 @@
 import jax.numpy as jnp
 from typing import Optional, Dict, Any
-
 from dynamax.linear_gaussian_ssm.models import LinearGaussianSSM
 from dynamax.linear_gaussian_ssm.inference import (
     ParamsLGSSM,
@@ -15,12 +14,12 @@ from models.components.ctds_emissions import CTDSEmissions
 
 class CTDSModel:
     """
-    Wrapper for a Cell-Type Dynamical System (CTDS) using Dynamax's LinearGaussianSSM.
+    Cell-Type Dynamical System (CTDS) using Dynamax's LinearGaussianSSM.
 
-    Workflow:
+    how to use:
       1. Instantiate with dimensions and metadata
       2. Call `initialize_params()` to build CTDS-specific A, Q, C, R and set `self.params`
-      3. Use external trainer/evaluator modules for EM, prediction, likelihood, etc.
+      3. Use external trainer/eval for EM, prediction, likelihood, etc.
     """
     def __init__(
         self,
@@ -44,7 +43,7 @@ class CTDSModel:
         )
         self.config = config or {}
 
-        # Underlying Dynamax model
+        #  Dynamax model
         self.model = LinearGaussianSSM(
             state_dim=self.num_latents,
             emission_dim=self.num_observations
@@ -58,7 +57,7 @@ class CTDSModel:
           - C, R via CTDSEmissions
           - mu0, Sigma0 as zeros and identity
 
-        Returns:
+        returns:
             The constructed ParamsLGSSM object
         """
         # Dynamics
