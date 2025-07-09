@@ -1,7 +1,10 @@
-import jax
 import jax.numpy as jnp
 from typing import Tuple, Optional
-from models.components.constraints import clip_matrix, apply_dale_constraint, apply_block_sparsity
+from models.components.constraints import (
+    clip_matrix,
+    apply_block_sparsity,
+    project_to_unit_norm,
+)
 
 
 class CTDSEmissions:
@@ -40,6 +43,32 @@ class CTDSEmissions:
         self.noise_scale = noise_scale
         self.normalize = normalize
 
+    def _latent_metadata(self) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        """Return arrays of latent regions and cell types."""
+        latent_regions = []
+        latent_types = []
+        for r, dims in enumerate(self.list_of_dimensions):
+            # assume ordering [excitatory, inhibitory]
+            d_e = int(dims[0]) if dims.shape[0] > 0 else 0
+            d_i = int(dims[1]) if dims.shape[0] > 1 else 0
+            latent_regions += [r] * (d_e + d_i)
+            latent_types += [1] * d_e
+            latent_types += [2] * d_i
+        return jnp.array(latent_regions), jnp.array(latent_types)
+
+    def _build_mask(self) -> jnp.ndarray:
+        """Construct block-sparse mask for emissions."""
+        total_latents = int(jnp.sum(self.list_of_dimensions))
+        total_neurons = len(self.cell_identity)
+        latent_regions, latent_types = self._latent_metadata()
+        mask = jnp.zeros((total_neurons, total_latents))
+        for n in range(total_neurons):
+            r = int(self.region_identity[n])
+            ct = int(self.cell_identity[n])
+            allow = (latent_regions == r) & ((latent_types == ct) | (ct == 0))
+            mask = mask.at[n, allow].set(1.0)
+        return mask
+
 
 
     def build(self) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -51,15 +80,14 @@ class CTDSEmissions:
             R: (D, D) diagonal observation noise covariance
         """
         num_regions = self.list_of_dimensions.shape[0]
-        num_neurons_per_region = jnp.bincount(self.region_identity).max()
-        neurons_per_type = num_neurons_per_region // 2
         total_latents = int(jnp.sum(self.list_of_dimensions))
         total_neurons = len(self.cell_identity)
 
-        C = jnp.zeros((total_neurons, total_latents))
-        latent_offset = 0
-
-        #TO DO BUILD 
+        mask = self._build_mask()
+        C = mask * self.base_strength
+        if self.normalize:
+            C = project_to_unit_norm(C, axis=1)
+        C = clip_matrix(C, 0.0, jnp.inf)
 
         
         # Diagonal observation noise
@@ -86,6 +114,17 @@ class CTDSEmissions:
         T, N = Y.shape
         D = Ex.shape[1]
 
-        #TO DO REST
+        Exx_sum = jnp.sum(Exx, axis=0)
+        C_hat = (Y.T @ Ex) @ jnp.linalg.inv(Exx_sum)
 
-        return C, R
+        mask = self._build_mask()
+        C_hat = apply_block_sparsity(C_hat, mask)
+        C_hat = clip_matrix(C_hat, 0.0, jnp.inf)
+        if self.normalize:
+            C_hat = project_to_unit_norm(C_hat, axis=1)
+
+        pred = Ex @ C_hat.T
+        resid = Y - pred
+        R_diag = jnp.mean(resid ** 2, axis=0)
+        R = jnp.diag(R_diag + self.noise_scale)
+        return C_hat, R
