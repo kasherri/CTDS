@@ -59,7 +59,8 @@ class CTDSEmissions:
         C = jnp.zeros((total_neurons, total_latents))
         latent_offset = 0
 
-        #TO DO BUILD 
+        #TO DO BUILD
+        #
 
         
         # Diagonal observation noise
