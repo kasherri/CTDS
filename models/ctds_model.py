@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from typing import Optional, Dict, Any
 from dynamax.linear_gaussian_ssm.models import LinearGaussianSSM
@@ -16,10 +17,25 @@ class CTDSModel:
     """
     Cell-Type Dynamical System (CTDS) using Dynamax's LinearGaussianSSM.
 
-    how to use:
-      1. Instantiate with dimensions and metadata
-      2. Call `initialize_params()` to build CTDS-specific A, Q, C, R and set `self.params`
-      3. Use external trainer/eval for EM, prediction, likelihood, etc.
+    How to Use:
+      1. Instantiate with dimensional and metadata information.
+      2. Call `initialize_params()` to construct constrained A, Q, C, R matrices and initialize ParamsLGSSM.
+      3. Use a trainer to run EM inference with these initialized parameters.
+
+    ------------------------
+    Args:
+        num_timesteps:      Number of time steps in the time series data.
+        num_latents:        Dimensionality of the latent (state) space.
+        num_observations:   Dimensionality of the observation space (i.e., number of recorded neurons).
+        cell_identity:      (D,) array mapping each observed neuron to a cell type (e.g. 0=unknown, 1=E, 2=I).
+        list_of_dimensions: (R x 2) array giving [#E, #I] neurons per region.
+        region_identity:    (D,) array mapping each neuron to a brain region. Optional; defaults to all zeros.
+        config:             Dictionary of config options, such as base_strength, noise_scale, and constraint toggles.
+
+    Attributes:
+        model:              Dynamax LinearGaussianSSM instance.
+        params:             Parameters of the model (set via initialize_params or manually).
+    
     """
     def __init__(
         self,

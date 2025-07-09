@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 from typing import Tuple
 from models.components.constraints import apply_dale_constraint, apply_block_sparsity
+from jaxopt import OSQP
 
 
 class CTDSDynamics:
@@ -9,6 +10,14 @@ class CTDSDynamics:
       - Block-diagonal structure by region
       - Dale's law within regions
       - Cross-region sparsity
+    
+    Args:
+        list_of_dimensions: (num_regions, num_cell_types) jnp.ndarray of latent dims per region×cell-type
+        within_region: enforce Dale's law within-region if True
+        across_region: enforce cross-region sparsity if True
+        base_strength: diagonal strength for each block
+        noise_scale: variance for process noise Q    
+
     """
     def __init__(
         self,
@@ -18,14 +27,7 @@ class CTDSDynamics:
         base_strength: float = 0.99,
         noise_scale: float = 0.1
     ):
-        """
-        Args:
-            list_of_dimensions: (num_regions, num_cell_types) array of latent dims per region×cell-type
-            within_region: enforce Dale's law within-region if True
-            across_region: enforce cross-region sparsity if True
-            base_strength: diagonal strength for each block
-            noise_scale: variance for process noise Q
-        """
+    
         self.list_of_dimensions = list_of_dimensions.astype(int)
         self.within_region = within_region
         self.across_region = across_region
@@ -102,45 +104,42 @@ class CTDSDynamics:
         Q = jnp.eye(A.shape[0]) * self.noise_scale
         return A, Q
     
-    def m_step(self, posterior) -> Tuple[jnp.ndarray, jnp.ndarray]:
+   
+    def m_step(self, posterior_dict) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """
-        constrained M-step using quadratic programming to estimate the dynamics matrix A,
-        and compute the process noise covariance Q from residuals.
-
-        Args:
-            posterior: {smoothed means, smoothed covariances, smoothed cross varaince}  from E step w
-
-        Returns:
-            A_constrained: (D, D) dynamics matrix satisfying Dale's law and sparsity constraints
-            Q: (D, D) estimated process noise covariance matrix
+        to do
         """
-        X_t = posterior["Ex"][:-1]         # shape: (T-1, D) — previous states
-        X_tp1 = posterior["Ex"][1:]        # shape: (T-1, D) — next states
-        Tm1, D = X_t.shape
+        Ex = posterior_dict["Ex"]
+        Exx = posterior_dict["Exx"]
+        Exnx = posterior_dict["Exnx"]
+        T, D = Ex.shape
 
-        # Least-squares regression objective: min_A ||X_tp1 - A X_t||^2
-        XtX = X_t.T @ X_t                        # (D, D)
-        XtY = X_t.T @ X_tp1                      # (D, D)
-        P = jnp.kron(XtX, jnp.eye(D))            # (D^2, D^2) QP Hessian
-        q = -XtY.T.flatten()                     # (D^2,) QP linear term
+        # setup qp problem
+        X_t = Ex[:-1]        # (T-1, D)
+        X_tp1 = Ex[1:]       # (T-1, D)
+        XtX = X_t.T @ X_t    # (D, D)
+        XtY = X_t.T @ X_tp1  # (D, D)
 
-        # Constraints: Dale’s law + optional sparsity
-        cell_types = self._build_latent_types()                      # (D,)
+        P = jnp.kron(XtX, jnp.eye(D))        # (D^2, D^2)
+        q = -XtY.T.flatten()                 # (D^2,)
+
+        # set inequality constraints
+        cell_types = self._build_latent_types()  # (D,)
         sparsity_mask = self._build_cross_region_mask() if self.across_region else jnp.ones((D, D))
         G, h = self._build_inequality_constraints(D, cell_types, sparsity_mask)
 
-        # Solve QP: get vectorized optimal A
-        qp_solver = QuadraticProgramming()
-        sol = qp_solver.run(params_obj=(P, q, G, h, None)).params
-        A = sol.primal.reshape((D, D))
+        # solve 
+        solver = OSQP()
+        sol = solver.run(params_obj=(P, q, G, h, None)).params
+        A = sol.primal.reshape((D, D))  # reshape flat vector to matrix
 
-        # Compute residuals and update Q
-        pred = A @ X_t.T                      # shape: (D, T-1)
-        err = X_tp1.T - pred                  # shape: (D, T-1)
-        Q = (err @ err.T) / Tm1              # empirical residual covariance
-        Q += self.noise_scale * jnp.eye(D)   # optional regularization
+        pred = A @ X_t.T             # (D, T-1)
+        err = X_tp1.T - pred         # (D, T-1)
+        Q = (err @ err.T) / (T - 1)  # empirical residual covariance
+        Q += self.noise_scale * jnp.eye(D)  # regularization
 
         return A, Q
+
 
     
 

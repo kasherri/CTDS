@@ -31,18 +31,20 @@ def em(model: LinearGaussianSSM,
     """
     lls = []
     for i in range(num_iters):
-        # ------------------ E STEP ------------------
+        # ---------------------------E STEP -------------------------
         smoothed = smoother(model, params, emissions) # returns PosteriorGSSMSmoothed() object which is tuple-like object?
         Ex = smoothed.smoothed_means #mean of latent at time t
-        Exx = smoothed.smoothed_covariances + jnp.einsum("ti,tj->tij", Ex, Ex) #Cov[z_t] + Ex ⊗ Ex	
-        Exnx = smoothed.smoothed_cross_covariances + jnp.einsum("ti,tj->tij", Ex[1:], Ex[:-1])  #Cov[z_t, z_{t-1}] + Ex[1:] ⊗ Ex[:-1]	
+        Exx = smoothed.smoothed_covariances #Cov[x_t]
+        Exnx = smoothed.smoothed_cross_covariances #Cov[x_t, x_{t-1}]
+        #Exx = smoothed.smoothed_covariances + jnp.einsum("ti,tj->tij", Ex, Ex) #Cov[z_t] + Ex ⊗ Ex	
+        #Exnx = smoothed.smoothed_cross_covariances + jnp.einsum("ti,tj->tij", Ex[1:], Ex[:-1])  #Cov[z_t, z_{t-1}] + Ex[1:] ⊗ Ex[:-1]	
         posterior = {
             "Ex": Ex ,                  # (T, D)
             "Exx": Exx,                    # (T, D, D)
             "Exnx": Exnx                    # (T-1, D, D)
         }
 
-        # ------------------ M STEP ------------------
+        # -------------------------------- M STEP ----------------------------
         A, Q = dynamics.m_step(posterior)           # (D, D), (D, D)
         C, R = emissions_module.m_step(posterior, emissions)  # (N, D), (N, N)
 
