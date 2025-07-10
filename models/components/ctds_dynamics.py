@@ -2,6 +2,7 @@ import jax.numpy as jnp
 from typing import Tuple
 from models.components.constraints import apply_dale_constraint, apply_block_sparsity
 from jaxopt import OSQP
+from ...utils.regression import fit_constrained_linear_regression_batched
 
 
 class CTDSDynamics:

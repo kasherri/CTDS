@@ -134,3 +134,30 @@ class CTDSModel:
         if self.params is None:
             raise ValueError("Parameters have not been initialized. Call `initialize_params()` first.")
         return self.params
+
+    def sample(
+        self,
+        T: Optional[int] = None,
+        prefix: Optional[Any] = None,
+        rng: Optional[jax.random.KeyArray] = None,
+        **kwargs
+    ):
+        """Sample latent states and observations from the model.
+
+        Args:
+            T: Number of timesteps. Defaults to ``self.num_timesteps``.
+            prefix: Optional initial state for the underlying model.
+            rng: JAX PRNG key.
+
+        Returns:
+            A tuple ``(states, observations)`` from the generative model.
+        """
+        if self.params is None:
+            raise ValueError(
+                "Parameters have not been initialized. Call `initialize_params()` first."
+            )
+
+        T = self.num_timesteps if T is None else T
+        rng = jax.random.PRNGKey(0) if rng is None else rng
+
+        return self.model.sample(self.params, T=T, prefix=prefix, rng=rng, **kwargs)
