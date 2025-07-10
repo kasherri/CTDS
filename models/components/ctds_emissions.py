@@ -2,16 +2,10 @@ import jax
 import jax.numpy as jnp
 from typing import Tuple, Optional
 from models.components.constraints import clip_matrix, apply_dale_constraint, apply_block_sparsity
+from ...utils import fit_constrained_linear_regression_batched
 
-import jax
-import jax.numpy as jnp
-from jax import random
-from typing import Dict, Any
 
-import jax
-import jax.numpy as jnp
-from ssm.regression import fit_constrained_linear_regression_jax
-import jax.numpy as jnp
+
 from skjax.decomposition import PCA as JaxPCA
 
 class CTDSEmissions:
