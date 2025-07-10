@@ -4,16 +4,16 @@ import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import List, Tuple
-from models.ctds_model import CTDSModel
+#from models.ctds_model import CTDSModel
 
-
+"""
 def simulate_ctds_data(
     model: CTDSModel,
     T: int,
     num_trials: int,
     seed: int = 0
 ) -> Tuple[List[jnp.ndarray], List[jnp.ndarray]]:
-    """
+    
     simulate multiple trials of data from the CTDS model.
 
     Args:
@@ -25,7 +25,7 @@ def simulate_ctds_data(
     Returns:
         states_list: List of length `num_trials`, each (T, D) latent state trajectory
         data_list: List of length `num_trials`, each (T, N) observed neural activity
-    """
+    
     key = jax.random.PRNGKey(seed)
     states_list, data_list = [], []
 
@@ -38,4 +38,4 @@ def simulate_ctds_data(
     return states_list, data_list
 
 
-
+"""

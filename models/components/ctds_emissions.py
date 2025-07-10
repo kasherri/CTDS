@@ -1,9 +1,8 @@
 import jax
 import jax.numpy as jnp
-from typing import Tuple, Optional
+from typing import Tuple, Dict, Any
 from models.components.constraints import clip_matrix, apply_dale_constraint, apply_block_sparsity
-from ...utils import fit_constrained_linear_regression_batched
-
+from models.utils.regression import fit_constrained_linear_regression_batched
 
 
 from skjax.decomposition import PCA as JaxPCA
@@ -97,7 +96,7 @@ class CTDSEmissions:
         return self.params
     
     def _initialize_with_pca_jax(self, Y, inputs=None):
-
+        Keff=1 #keff is effective number of emission subspaces so since we are not doing switching we use 1
         # Convert all data to jax arrays
         Y = [jnp.array(data) for data in Y]
         if inputs is not None:
@@ -138,8 +137,6 @@ class CTDSEmissions:
         self.inv_etas = pca.noise_variance_ + 1e-4 * jnp.eye(self.N)
 
         return pca
-
-
 
 
     #posterior is continous right now but will later extend for switching models and mixture models

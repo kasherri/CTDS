@@ -8,9 +8,8 @@ from dynamax.linear_gaussian_ssm.inference import (
     ParamsLGSSMDynamics,
     ParamsLGSSMEmissions
 )
-
-from models.components.ctds_dynamics import CTDSDynamics
-from models.components.ctds_emissions import CTDSEmissions
+from .components.ctds_dynamics import CTDSDynamics
+from .components.ctds_emissions import CTDSEmissions
 
 
 class CTDSModel:
@@ -87,13 +86,11 @@ class CTDSModel:
         A, Q = dyn_builder.build()
 
         # Emissions
-        emis_builder = CTDSEmissions(
-            cell_identity=self.cell_identity,
-            list_of_dimensions=self.list_of_dimensions,
-            region_identity=self.region_identity,
-            base_strength=self.config.get("emissions_base_strength", 1.0),
-            noise_scale=self.config.get("emissions_noise_scale", 0.5),
-            normalize=self.config.get("emissions_normalize", False)
+        emis_builder = CTDSEmissions(40, len(self.list_of_dimensions),
+            self.cell_identity,
+            self.region_identity,
+            self.list_of_dimensions, 
+
         )
         C, R = emis_builder.build()
 
@@ -139,7 +136,7 @@ class CTDSModel:
         self,
         T: Optional[int] = None,
         prefix: Optional[Any] = None,
-        rng: Optional[jax.random.KeyArray] = None,
+        rng: Optional[jax.random.key_data] = None,
         **kwargs
     ):
         """Sample latent states and observations from the model.
