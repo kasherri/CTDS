@@ -2,10 +2,9 @@ import jax
 import jax.numpy as jnp
 from typing import Tuple, Dict, Any
 from models.components.constraints import clip_matrix, apply_dale_constraint, apply_block_sparsity
-from models.utils.regression import fit_constrained_linear_regression_batched
 
 
-from skjax.decomposition import PCA as JaxPCA
+
 
 class CTDSEmissions:
     """

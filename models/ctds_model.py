@@ -12,24 +12,24 @@ from .components.ctds_dynamics import CTDSDynamics
 from .components.ctds_emissions import CTDSEmissions
 
 
+
+#write switching method also later
 class CTDSModel:
     """
-    Cell-Type Dynamical System (CTDS) using Dynamax's LinearGaussianSSM.
-
-    How to Use:
+    Cell-Type Dynamical System (CTDS) wrapper around Dynamax's LinearGaussianSSM.
+S
       1. Instantiate with dimensional and metadata information.
-      2. Call `initialize_params()` to construct constrained A, Q, C, R matrices and initialize ParamsLGSSM.
+      2. Call `initialize()` to construct constrained A, Q, C, R matrices and initialize ParamsLGSSM.
       3. Use a trainer to run EM inference with these initialized parameters.
 
     ------------------------
     Args:
-        num_timesteps:      Number of time steps in the time series data.
-        num_latents:        Dimensionality of the latent (state) space.
-        num_observations:   Dimensionality of the observation space (i.e., number of recorded neurons).
-        cell_identity:      (D,) array mapping each observed neuron to a cell type (e.g. 0=unknown, 1=E, 2=I).
-        list_of_dimensions: (R x 2) array giving [#E, #I] neurons per region.
-        region_identity:    (D,) array mapping each neuron to a brain region. Optional; defaults to all zeros.
-        config:             Dictionary of config options, such as base_strength, noise_scale, and constraint toggles.
+        num_timesteps(T):   Number of time steps in the time series data.
+        num_latents(D):     Dimensionality of the latent space.
+        num_observations(N): Number of recorded neurons.
+        cell_identity:      Dictionary with cell label: [cell_type(E or I), #of dimensions. #of neurons] key value pair
+        oberservations(Y): (N, T) array of observed neuron activity.
+
 
     Attributes:
         model:              Dynamax LinearGaussianSSM instance.
@@ -43,7 +43,8 @@ class CTDSModel:
         num_observations: int,
         cell_identity: jnp.ndarray,
         list_of_dimensions: jnp.ndarray,
-        region_identity: Optional[jnp.ndarray] = None,
+        observations: jnp.ndarray,
+        #region_identity: Optional[jnp.ndarray] = None,
         config: Optional[Dict[str, Any]] = None
     ):
         self.num_timesteps = num_timesteps
@@ -65,7 +66,7 @@ class CTDSModel:
         )
         self.params: Optional[ParamsLGSSM] = None
 
-    def initialize_params(self) -> ParamsLGSSM:
+    def initialize(self) -> ParamsLGSSM:
         """
         Build and set CTDS-specific parameters:
           - A, Q via CTDSDynamics
@@ -75,6 +76,8 @@ class CTDSModel:
         returns:
             The constructed ParamsLGSSM object
         """
+        #Learn J
+
         # Dynamics
         dyn_builder = CTDSDynamics(
             list_of_dimensions=self.list_of_dimensions,

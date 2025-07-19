@@ -7,6 +7,7 @@ from .constraints import (
     project_to_unit_norm,
     clip_matrix,
 )
+from .intialize import estimate_J
 
 
 #enables from ctds.models.components import CTDSDynamics, apply_dale_constraint
