@@ -1,11 +1,13 @@
 import jax
 import jax.numpy as jnp
-from jaxopt import BoxOSQP
+#from jaxopt import BoxOSQP
+from typing import Optional
+from jaxopt import BoxCDQP
 
-
-_boxosqp = BoxOSQP() 
+_boxCDQP = BoxCDQP(tol=1e-6) 
 
 #might change args to matvec functions
+#need to change so it constrains diagonal to 0
 @jax.jit
 def solve_dale_QP(Q, c, mask):
     """
@@ -15,7 +17,7 @@ def solve_dale_QP(Q, c, mask):
         minimize    (1/2) * xᵀ Q x + cᵀ x
         subject to:
             x[i] >= 0      if mask[i] is True  (excitatory neuron)
-            x[i] == 0      if mask[i] is False (inhibitory neuron)
+            x[i] <= 0      if mask[i] is False (inhibitory neuron)
 
     This is a box-constrained QP where:
         - Excitatory (E) neurons can have positive weights
@@ -31,20 +33,23 @@ def solve_dale_QP(Q, c, mask):
     Returns:
         jnp.ndarray: Solution vector x ∈ ℝ^D satisfying constraints.
     """
+
     D = Q.shape[0]
-    A= jnp.eye(D)
+  
    
     #if mask is true cell is E cell
     #else cell is I cell
     #.where returns 0.0 for I cells and inf for E cells
-    lower = jnp.where(mask, 0.0, -jnp.inf) #E cell lower bound is 0.0, I cell lower bound is -inf
-    upper = jnp.where(mask, jnp.inf, 0.0) # I cell upper bound is 0.0, E cell upper bound is inf
-    
+    lower = jnp.where(mask, 1e-3, -jnp.inf) #E cell lower bound is 0.0, I cell lower bound is -inf
+    upper = jnp.where(mask, jnp.inf, -1e-3) # I cell upper bound is 0.0, E cell upper bound is inf
+
+    init_x = jax.random.normal(jax.random.PRNGKey(42), (D,))
     
     # Run the OSQP solver
-    sol = _boxosqp.run( params_obj=(Q, c), params_eq=A,  params_ineq=(lower, upper))
+    sol = _boxCDQP.run( init_x, params_obj=(Q, c),   params_ineq=(lower, upper))
   
-    return sol.params.primal[0]  # Return the optimal parameters (solution vector)
+    #return sol.params.primal[0]  # Return the optimal parameters (solution vector)
+    return sol.params
 
 
 
@@ -57,18 +62,6 @@ def solve_dale_QP(Q, c, mask):
 #   using the BoxCDQP solver from JAXOPT.
 @jax.jit
 def estimate_J( Y: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
-    """
-    Estimate Dale-constrained J from neural activity Y.
-    
-    Args:
-      Y: array of shape (N, T), each row is one timepoint across N neurons.
-      excitatory_mask: bool array of shape (N,), True if neuron j is excitatory.
-      maxiter: max CD iterations in BoxCDQP.
-      tol: convergence tolerance for BOXCDQP    .
-    
-    Returns:
-      J: array of shape (N, N), column j = weights predicting neuron j.
-    """
 
 
     N, T = Y.shape
@@ -80,29 +73,26 @@ def estimate_J( Y: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
     # X= Y_pastᵀ∈ ℝ^{(T-1) × N}
     X = Y_past.T  # (T-1, N)
 
-    """
-      For each column j ∈ {1, ..., N}:
-          Let y_future_j = Y[j, :]ᵀ      ∈ ℝ^{T-1}
-              X         = Y_pastᵀ        ∈ ℝ^{(T-1) × N}  
-    """
-    Q = 2.0 * jnp.dot(X.T, X) #Q = 2 Xᵀ X∈ ℝ^{N × N}, positive semidefinite
-    #implent with fori
-    def body_fn(j, J):
-       y_future_j = Y_future[j, :].T  # (T-1,)
-       c = -2.0 * jnp.dot(X.T, y_future_j)  #c = -2 Xᵀ y_future_j ∈ ℝ^N
-       w_mask = jnp.full((N,), mask[j])
-# (N,) if mask[j] is True, then w_mask is filled with N True, else filled with N False
-       w_j= solve_dale_QP(Q, c, w_mask)  # Solve the constrained QP for column j
-       # Update J with the solution for column j
-       #assert w_j.shape == (N,), f"w_j.shape = {w_j.shape}, expected {(N,)}"
+    epsilon = 1e-3  # Small regularization constant (can tune this)
+   #Q = 2 Xᵀ X∈ ℝ^{N × N}, positive semidefinite
+    Q = 2.0 * (X.T @ X) + epsilon * jnp.eye(N)
 
-       return J.at[:, j].set(w_j)  # set column j
+    C = -2.0 * (X.T @ Y_future.T)            # shape (N, N) → column c_j is C[:, j]
+    masks = jnp.tile(mask[None, :], (N, 1)) 
 
-    J_init = jnp.zeros((N, N))
-    J = jax.lax.fori_loop(0, N, body_fn, J_init)
+    vmap_solver = jax.vmap(solve_dale_QP, in_axes=(None, 1, 0))
+    J=vmap_solver(Q, C, masks)  # shape (N, N)
     return J
 
-"""
+
+
+
+
+
+
+
+
+
 # Dummy data: 3 neurons, 5 timepoints
 Y = jnp.array([
     [1., 2., 3., 4., 5.],    # neuron 0
@@ -110,14 +100,16 @@ Y = jnp.array([
     [5., 4., 3., 2., 1.],    # neuron 2
 ])
 
+
 # Neuron types: [E, I, E]
-mask = jnp.array([True, False, True])  # True = excitatory, False = inhibitory
+mask = jnp.array([True, False, False])  # True = excitatory, False = inhibitory
+
 
 # Run the estimator
-J_est = estimate_J(Y, mask)
+#J_est = estimate_J(Y, mask)
 
-print("Estimated J:\n", J_est)
-"""
+#print("Estimated J:\n", J_est)
+
 
 
 
