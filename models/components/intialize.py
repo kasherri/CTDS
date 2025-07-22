@@ -3,6 +3,8 @@ import jax.numpy as jnp
 #from jaxopt import BoxOSQP
 from typing import Optional
 from jaxopt import BoxCDQP
+import jax.random as jr
+
 
 _boxCDQP = BoxCDQP(tol=1e-6) 
 
@@ -53,7 +55,65 @@ def solve_dale_QP(Q, c, mask):
 
 
 
+#initialize factors for NMF
+@jax.jit
+def init_factors(key, shape_u, shape_v, method='uniform', J_plus=None):
+    """
+    Initialize non-negative matrix factors U and V.
 
+    Args:
+        key: jax.random.PRNGKey
+        shape_u: tuple, shape of U (e.g., (N_E, K1))
+        shape_v: tuple, shape of V (e.g., (N, K1))
+        method: str, one of {'uniform', 'exp', 'nndsvd'}
+        J_plus: jnp.ndarray, required for 'nndsvd'; shape should match (shape_u[0], shape_v[0])
+
+    Returns:
+        U (jnp.ndarray), V (jnp.ndarray): initialized factors
+    """
+    if method == 'uniform':
+        k1, k2 = jr.split(key)
+        U = jr.uniform(k1, shape_u)
+        V = jr.uniform(k2, shape_v)
+
+    elif method == 'exp':
+        k1, k2 = jr.split(key)
+        U = jr.exponential(k1, shape_u)
+        V = jr.exponential(k2, shape_v)
+
+    elif method == 'nndsvd':
+        assert J_plus is not None, "J_plus must be provided for nndsvd initialization"
+        # shape_u = (M, K), shape_v = (N, K) implies J_plus ∈ ℝ^{M × N}
+        U_full, S, VT_full = jnp.linalg.svd(J_plus, full_matrices=False)
+        K = shape_u[1]
+
+        U_trunc = U_full[:, :K]
+        S_trunc = S[:K]
+        V_trunc = VT_full[:K, :].T
+
+        U = jnp.maximum(U_trunc, 0.0) * jnp.sqrt(S_trunc)
+        V = jnp.maximum(V_trunc, 0.0) * jnp.sqrt(S_trunc)
+
+    else:
+        raise ValueError(f"Unknown init method: {method}")
+
+    # Normalize (helps stability)
+    U = U / (jnp.linalg.norm(U, axis=1, keepdims=True) + 1e-8)
+    V = V / (jnp.linalg.norm(V, axis=0, keepdims=True) + 1e-8)
+
+    return U, V
+
+
+"""
+# Example usage:
+# Random init
+U, V = init_factors(jr.PRNGKey(0), (N_E, K1), (N, K1), method='uniform')
+
+# NNDSVD init
+J_E_plus = jnp.abs(J[:N_E, :])
+U, V = init_factors(None, (N_E, K1), (N, K1), method='nndsvd', J_plus=J_E_plus)
+
+"""
 
 # Step 1: Estimate J from neural activity Y
 #   J is the matrix of weights predicting each neuron from all others.
@@ -62,7 +122,13 @@ def solve_dale_QP(Q, c, mask):
 #   using the BoxCDQP solver from JAXOPT.
 @jax.jit
 def estimate_J( Y: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
-
+    """Estimate the Dale matrix J from neural activity Y.
+    Args:
+        Y: (N, T) array of neural activity, where N is number of neurons and T is timepoints.
+        mask: (N,) boolean array indicating excitatory (True) vs inhibitory (False) neurons.
+    Returns:
+        J: (N, N) estimated Dale matrix, where J[i, j] is the weight from neuron j to neuron i.
+    """
 
     N, T = Y.shape
     J = jnp.zeros((N, N))
@@ -85,13 +151,10 @@ def estimate_J( Y: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
     return J
 
 
+#TO DO: Multiregion estimate_J
 
 
-
-
-
-
-
+"""
 
 # Dummy data: 3 neurons, 5 timepoints
 Y = jnp.array([
@@ -109,13 +172,7 @@ mask = jnp.array([True, False, False])  # True = excitatory, False = inhibitory
 #J_est = estimate_J(Y, mask)
 
 #print("Estimated J:\n", J_est)
-
-
-
-
-
-
-
+"""
 
 
 
