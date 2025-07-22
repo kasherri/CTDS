@@ -54,6 +54,7 @@ class CTDSDynamics:
             A = A.at[start:end, start:end].set(self.base_strength * jnp.eye(size))
         return A
 
+#not jittable
     def build_latent_types(self) -> jnp.ndarray:
         """
         Create a length-K array of latent cell-type labels:

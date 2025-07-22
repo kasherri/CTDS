@@ -1,6 +1,8 @@
 
 import jax
 import pytest
+import time
+
 import cvxpy as cp
 from jax.numpy.linalg import eigvals
 import matplotlib.pyplot as plt
@@ -86,14 +88,19 @@ def simulate_activity(J_true, T, noise_scale=0.05, key=None):
 
 # ------------------------------
 # 1. Generate true J and mask
-N, T = 10, 1000
+N, T = 10, 100000
 J_true, mask = generate_dale_J(N=N, key=key)
 
 
 # 2. Simulate dynamics
 Y = simulate_activity(J_true, T=T, key=key)
 # 3. Estimate J
+
+#compare time
+start_time = time.time()
 J_est = estimate_J(Y, mask)
+end_time = time.time()
+print(f"Time taken by estimate_J: {end_time - start_time:.2f} seconds")
 #print("True J:\n", J_true.shape)
 #print("Estimated J:\n", J_est)
 
@@ -169,7 +176,12 @@ def learn_J_from_data(datas, N_e=0, signs=None):
 #convery Y to numpy array
 signs=jnp.where(mask, 1, 2)  # 1 for excitatory, 2 for inhibitory
 Y_np = Y.astype(np.float64)
+
+#compare time
+start_time = time.time()
 J_est_aditi = learn_J_from_data([Y_np.T], N_e=2, signs=signs.astype(np.int32))
+end_time = time.time()
+print(f"Time taken by Aditi's method: {end_time - start_time:.2f} seconds")
 #print("Estimated J (Aditi's method):\n", J_est_aditi.shape)
 #convert to jax array
 J_est_aditi = jnp.array(J_est_aditi)
