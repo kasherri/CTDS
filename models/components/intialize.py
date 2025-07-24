@@ -11,7 +11,7 @@ _boxCDQP = BoxCDQP(tol=1e-6)
 #might change args to matvec functions
 #need to change so it constrains diagonal to 0
 @jax.jit
-def solve_dale_QP(Q, c, mask):
+def solve_dale_QP(Q, c, mask):# might change name to solve_constrained_QP
     """
     Solve a sign-constrained quadratic program with cell-type-specific constraints.
 
@@ -52,56 +52,6 @@ def solve_dale_QP(Q, c, mask):
   
     #return sol.params.primal[0]  # Return the optimal parameters (solution vector)
     return sol.params
-
-
-
-#initialize factors for NMF
-@jax.jit
-def init_factors(key, shape_u, shape_v, method='uniform', J_plus=None):
-    """
-    Initialize non-negative matrix factors U and V.
-
-    Args:
-        key: jax.random.PRNGKey
-        shape_u: tuple, shape of U (e.g., (N_E, K1))
-        shape_v: tuple, shape of V (e.g., (N, K1))
-        method: str, one of {'uniform', 'exp', 'nndsvd'}
-        J_plus: jnp.ndarray, required for 'nndsvd'; shape should match (shape_u[0], shape_v[0])
-
-    Returns:
-        U (jnp.ndarray), V (jnp.ndarray): initialized factors
-    """
-    if method == 'uniform':
-        k1, k2 = jr.split(key)
-        U = jr.uniform(k1, shape_u)
-        V = jr.uniform(k2, shape_v)
-
-    elif method == 'exp':
-        k1, k2 = jr.split(key)
-        U = jr.exponential(k1, shape_u)
-        V = jr.exponential(k2, shape_v)
-
-    elif method == 'nndsvd':
-        assert J_plus is not None, "J_plus must be provided for nndsvd initialization"
-        # shape_u = (M, K), shape_v = (N, K) implies J_plus ∈ ℝ^{M × N}
-        U_full, S, VT_full = jnp.linalg.svd(J_plus, full_matrices=False)
-        K = shape_u[1]
-
-        U_trunc = U_full[:, :K]
-        S_trunc = S[:K]
-        V_trunc = VT_full[:K, :].T
-
-        U = jnp.maximum(U_trunc, 0.0) * jnp.sqrt(S_trunc)
-        V = jnp.maximum(V_trunc, 0.0) * jnp.sqrt(S_trunc)
-
-    else:
-        raise ValueError(f"Unknown init method: {method}")
-
-    # Normalize (helps stability)
-    U = U / (jnp.linalg.norm(U, axis=1, keepdims=True) + 1e-8)
-    V = V / (jnp.linalg.norm(V, axis=0, keepdims=True) + 1e-8)
-
-    return U, V
 
 
 """
@@ -153,120 +103,126 @@ def estimate_J( Y: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
 
 #TO DO: Multiregion estimate_J
 
+#@jax.jit
+def blockwise_nmf(J,mask, D_E,D_I):
+    J_plus = jnp.abs(J)  #J⁺ = |J|,  where J⁺_{ij} = |J_{ij}|
+    
 
-"""
+    # Split J⁺ into excitatory and inhibitory blocks
+    idx_E = jnp.nonzero(mask, size=mask.shape[0])[0]
+    idx_I = jnp.nonzero(~mask, size=mask.shape[0])[0]
 
-# Dummy data: 3 neurons, 5 timepoints
-Y = jnp.array([
-    [1., 2., 3., 4., 5.],    # neuron 0
-    [0., 1., 0., 1., 0.],    # neuron 1
-    [5., 4., 3., 2., 1.],    # neuron 2
-])
+    J_E = jnp.take(J_plus, idx_E, axis=0)  # shape: (N_E, N)
+    J_I = jnp.take(J_plus, idx_I, axis=0)  # shape: (N_I, N)
 
+    N_E = J_E.shape[0]
+    N_I = J_I.shape[0]
 
-# Neuron types: [E, I, E]
-mask = jnp.array([True, False, False])  # True = excitatory, False = inhibitory
+    # Initialize factors for excitatory and inhibitory blocks
+    U_E=jax.random.uniform(jax.random.PRNGKey(0), (N_E, D_E), minval=0.1, maxval=1.0)
+    U_I=jax.random.uniform(jax.random.PRNGKey(1), (N_I, D_I), minval=0.1, maxval=1.0)
+    V_E=jax.random.uniform(jax.random.PRNGKey(2), (J_plus.shape[0], D_E), minval=0.1, maxval=1.0)
+    V_I=jax.random.uniform(jax.random.PRNGKey(3), (J_plus.shape[0], D_I), minval=0.1, maxval=1.0)
 
+    #U_E, V_E = init_factors(jax.random.PRNGKey(0),shape_u=(N_E, D_E), shape_v=(J_plus.shape[0], D_E))
+    #U_I, V_I = init_factors(jax.random.PRNGKey(1),shape_u=(N_I, D_I), shape_v=(J_plus.shape[0], D_I))
 
-# Run the estimator
-#J_est = estimate_J(Y, mask)
+    # We apply NMF to each block using alternating non-negative least squares (NNLS).
+    U_E, V_E = NMF(U_E, V_E, J_E)  # shape: (N_E, D_E), (N, D_E)
+    U_I, V_I = NMF(U_I, V_I, J_I) # shape: (N_I, D_I), (N, D_I)
 
-#print("Estimated J:\n", J_est)
-"""
+    return U_E, V_E, U_I, V_I
 
-
-
-
-
-# Step 2: J⁺ = |J|
-
-def compute_J_plus(J: jnp.ndarray) -> jnp.ndarray:
-    """Element‐wise absolute value of J."""
-    return jnp.abs(J)
+    
 
 
-# Step 3: multiplicative‐update NMF
-def nmf(
-    key: jax.random.PRNGKey,
-    M: jnp.ndarray,
-    rank: int,
-    num_iters: int = 100,
-    eps: float = 1e-8
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Non-negative matrix factorization via multiplicative updates.
-    Solves M ≈ U @ V^T with U >= 0, V >= 0.
-    Args:
-      key: PRNGKey for initialization.
-      M: matrix to factor, shape (m, n).
-      rank: number of components.
-      num_iters: number of update iterations.
-      eps: small constant to avoid division by zero.
-    Returns:
-      U: (m, rank), V: (n, rank)
-    """
-    m, n = M.shape
-    k1, k2 = jax.random.split(key)
-    # initialize U, V > 0
-    U = jax.random.uniform(k1, (m, rank), minval=0.1, maxval=1.0)
-    V = jax.random.uniform(k2, (n, rank), minval=0.1, maxval=1.0)
 
-    def body(_, UV):
+
+# ------------------------------------------------------------------------------
+# Non-Negative Matrix Factorization via Alternating NNLS
+# ------------------------------------------------------------------------------
+@jax.jit
+def NMF(U_init, V_init, J, max_iterations=1000, relative_error=1e-4):
+
+    def cond_fun(state):
         """
+        Condition for while loop termination:
+          - max_iterations reached
+          - relative error below threshold
+          - change in error below threshold
+        """
+        i, U, V = state
+        numerator = jnp.linalg.norm(J.T- U @ V.T, ord='fro')**2
+        denominator = jnp.linalg.norm(J, ord='fro')**2
+        return (i==max_iterations) | (numerator / denominator < relative_error)
+
+
+    def body_fun(state):
+        i, U, V = state
+
+        #--------------U Step---------------
+        #  Fix V, solve for each col uᵢ ∈ {1,...,N_E}:
+        #  min_{uᵢ ≥ 0} ||VU.T[:, i] -J[:, i] ||_2²
+        Q1= V @ V.T   #shape (N_E, N_E)
+        C1 = -2.0 * (J @ V)     # shape (N_E, DE) 
+
+        #masks all True since doing non-negative least squares
+        masks = jnp.full((J.shape[0],Q1.shape[0]), True, dtype=bool) #shape (N_E, D_E)
         
-        """
-        U, V = UV
-        # update U
-        numerator_U = M @ V                     # (m, rank)
-        denominator_U = (U @ (V.T @ V)) + eps   # (m, rank)
-        U = U * (numerator_U / denominator_U)
-        # update V
-        numerator_V = M.T @ U                   # (n, rank)
-        denominator_V = (V @ (U.T @ U)) + eps   # (n, rank)
-        V = V * (numerator_V / denominator_V)
-        return (U, V)
+        vmap_solver = jax.vmap(solve_dale_QP, in_axes=(None, 1, 0))
+        U_new=vmap_solver(Q1, C1.T, masks)  # shape (N_E, D_E)
 
-    U_final, V_final = jax.lax.fori_loop(0, num_iters, body, (U, V))
+        #--------------V Step---------------
+        #  Fix U, solve for each col vⱼ ∈ {1,...,N}:
+        #  min_{vⱼ ≥ 0} ||UV[:, j] - J[:, j] ||_2²
+        Q2 = U_new.T @ U_new #shape (D_E, D_E)
+        C2 = -2.0 * ( J.T @ U_new)  # shape  (N, D_E)
+        masks = jnp.full((J.shape[1], Q2.shape[0]), True, dtype=bool) # shape (N, D_E)
+        vmap_solver = jax.vmap(solve_dale_QP, in_axes=(None, 1, 0))
+        V_new = vmap_solver(Q2, C2.T, masks)  # shape (N, D_E)
+
+        return (i + 1, U_new, V_new)
+    
+    # Initialize state
+    init_state = (0, U_init, V_init)
+
+    final_state = jax.lax.while_loop(cond_fun, body_fun, init_state)
+    _, U_final, V_final = final_state
     return U_final, V_final
 
+key = jax.random.PRNGKey(42)
+N = 10
 
-# Step 4–5: block-wise NMF and build U, V_dale
-#   U is block-diagonal, V_dale = [V1, -V2] where V1, V2 are NMF factors for excitatory/inhibitory blocks.
-#   U is used to initialize the latent dynamics matrix A₀.
-#   V_dale is used to apply Dale's principle to the latent dynamics.
-@jax.jit
-def blockwise_nmf(
-    key: jax.random.PRNGKey,
-    J_plus: jnp.ndarray,
-    NE: int,
-    NI: int,
-    DE: int,
-    DI: int,
-    num_iters: int = 100,
-    eps: float = 1e-8
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Splits J⁺ into excitatory/inhibitory blocks, runs NMF, and constructs:
-      U     shape (N, DE+DI)  (block-diagonal)
-      V_dale shape (N, DE+DI)  ([ V1, -V2 ])
-    """
-    N = NE + NI
-    # Split keys
-    k1, k2 = jax.random.split(key)
+# Generate a random "ground-truth" non-negative low-rank matrix
+true_U = jax.random.uniform(key, (N, 4))
+true_V = jax.random.uniform(key, (N, 4))
+J_true = true_U @ true_V.T  # shape: (N, N)
 
-    # Block-wise NMF
-    U1, V1 = nmf(k1, J_plus[:NE, :], DE, num_iters, eps)   # U1: NE×DE, V1: N×DE
-    U2, V2 = nmf(k2, J_plus[NE:, :], DI, num_iters, eps)   # U2: NI×DI, V2: N×DI
+# Add small noise to simulate realistic data
+J_noisy = J_true + 0.01 * jax.random.normal(key, (N, N))
+J_noisy = jnp.clip(J_noisy, 0.0)  # enforce non-negativity
 
-    # Build U = block_diag(U1, U2)  → N×(DE+DI)
-    top    = jnp.concatenate([U1, jnp.zeros((NE, DI))], axis=1)
-    bottom = jnp.concatenate([jnp.zeros((NI, DE)), U2], axis=1)
-    U = jnp.concatenate([top, bottom], axis=0)             # (N, DE+DI)
+# Define a binary mask where first half is excitatory, rest inhibitory
+mask = jnp.array([True] * (N // 2) + [False] * (N - N // 2))  # shape (N,)
 
-    # Build V_dale = [ V1, -V2 ]  → N×(DE+DI)
-    V_dale = jnp.concatenate([V1, -V2], axis=1)
+# Apply blockwise NMF with rank 3 per block
+U_E, V_E, U_I, V_I = blockwise_nmf(J_noisy, mask, D_E=3, D_I=3)
 
-    return U, V_dale
+# Check shapes
+print("U_E shape:", U_E.shape)  # (N_E, D_E)
+print("V_E shape:", V_E.shape)  # (N, D_E)
+print("U_I shape:", U_I.shape)  # (N_I, D_I)
+print("V_I shape:", V_I.shape)  # (N, D_I)
+
+# Reconstruct and check Frobenius error
+J_E_recon = U_E @ V_E.T
+J_I_recon = U_I @ V_I.T
+J_recon = jnp.concatenate([J_E_recon, J_I_recon], axis=0)
+
+error = jnp.linalg.norm(J_noisy - J_recon) / jnp.linalg.norm(J_noisy)
+print("Relative reconstruction error:", error)
+
+
 
 
 # Step 6: initial A₀ = V_daleᵀ @ U

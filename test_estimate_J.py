@@ -86,6 +86,7 @@ def simulate_activity(J_true, T, noise_scale=0.05, key=None):
     Y = jax.lax.fori_loop(1, T, step, Y)
     return Y
 
+"""
 # ------------------------------
 # 1. Generate true J and mask
 N, T = 10, 100000
@@ -104,6 +105,16 @@ print(f"Time taken by estimate_J: {end_time - start_time:.2f} seconds")
 #print("True J:\n", J_true.shape)
 #print("Estimated J:\n", J_est)
 
+
+evaluate(J_true, J_est, mask)
+J_unconstrained = generate_unconstrained_J(N, key)
+Y_unconstrained = simulate_activity(J_unconstrained, T=T, key=key)
+J_est_unconstrained = estimate_unconstrained_J(Y_unconstrained)
+
+error= jnp.linalg.norm(J_unconstrained - J_est_unconstrained) / jnp.linalg.norm(J_unconstrained)
+print(f"Relative Frobenius Error (unconstrained): {error}")
+
+"""
 # 4. Evaluate accuracy
 def evaluate(J_true, J_est, mask):
     error = jnp.linalg.norm(J_true - J_est) / jnp.linalg.norm(J_true)
@@ -113,13 +124,6 @@ def evaluate(J_true, J_est, mask):
     inhib_error = jnp.sum((J_est[:, ~mask] > 1e-5))  # should be ≤ 0
     print(f"Violations: Excitatory: {excit_error}, Inhibitory: {inhib_error}")
 
-evaluate(J_true, J_est, mask)
-J_unconstrained = generate_unconstrained_J(N, key)
-Y_unconstrained = simulate_activity(J_unconstrained, T=T, key=key)
-J_est_unconstrained = estimate_unconstrained_J(Y_unconstrained)
-
-error= jnp.linalg.norm(J_unconstrained - J_est_unconstrained) / jnp.linalg.norm(J_unconstrained)
-print(f"Relative Frobenius Error (unconstrained): {error}")
 
 
 
@@ -171,8 +175,49 @@ def learn_J_from_data(datas, N_e=0, signs=None):
             J[i,:] = J_i.value
         return J
     
+Ts = [10, 100, 1000, 10000, 100000]
+times_est = []
+times_aditi = []
+
+for T in Ts:
+    # Generate Y
+    J_true, mask = generate_dale_J(N=10, key=key)
+    Y = simulate_activity(J_true, T=T, key=key)
+
+    # Time estimate_J
+    start = time.time()
+    J_est = estimate_J(Y, mask)
+    end = time.time()
+    times_est.append(end - start)
+
+    # Time learn_J_from_data
+    signs=jnp.where(mask, 1, 2)  # 1 for excitatory, 2 for inhibitory
+    Y_np = Y.astype(np.float64)
+    start = time.time()
+    J_aditi =learn_J_from_data([Y_np.T], N_e=2, signs=signs.astype(np.int32))
+    end = time.time()
+    times_aditi.append(end - start)
 
 
+
+#plot the results
+plt.figure(figsize=(10, 6))
+
+plt.plot(Ts, times_est, label="estimate_J (JAX)", marker='o')
+plt.plot(Ts, times_aditi, label="learn_J_from_data (CVXPY/MOSEK)", marker='o')
+
+plt.xscale('log')   # Log-scale for N
+plt.yscale('log')   # Log-scale for time
+
+plt.xlabel("Number of Time Points (T)")
+plt.ylabel("Runtime (seconds)")
+plt.title("Runtime Comparison: estimate_J vs learn_J_from_data")
+plt.legend()
+plt.grid(True, which="both", linestyle='--', linewidth=0.5)
+plt.tight_layout()
+plt.show()
+
+"""
 #convery Y to numpy array
 signs=jnp.where(mask, 1, 2)  # 1 for excitatory, 2 for inhibitory
 Y_np = Y.astype(np.float64)
@@ -195,17 +240,24 @@ evaluate(J_true, J_est_aditi, mask)
 fig, axs = plt.subplots(1, 3, figsize=(12, 5))
 im0 = axs[0].imshow(J_true - J_est, cmap="bwr")
 axs[0].set_title("J_true - J_est (JAX Constrained)")
+#plt.suptitle(f"Relative Frobenius Error (JAX): {jnp.linalg.norm(J_true - J_est) / jnp.linalg.norm(J_true):.3f}\n")
 plt.colorbar(im0, ax=axs[0])
 
 
 
 im1 = axs[1].imshow(J_unconstrained - J_est_unconstrained, cmap="bwr")
 axs[1].set_title("J_unconstrained - J_est_unconstrained")
+#plt.text(f"Relative Frobenius Error (Unconstrained): {jnp.linalg.norm(J_unconstrained - J_est_unconstrained) / jnp.linalg.norm(J_unconstrained):.3f}\n")
 plt.colorbar(im1, ax=axs[1])
 
 im2 = axs[2].imshow(J_true - J_est_aditi, cmap="bwr")
-axs[2].set_title("J_true - J_est_aditi (CVPXY Method)")
+axs[2].set_title("J_true - J_est (CVPXY Method)")
+ #include Evaluation statistics in plot
+#plt.text(f"Relative Frobenius Error (CVXPY): {jnp.linalg.norm(J_true - J_est_aditi) / jnp.linalg.norm(J_true):.3f}\n")
 plt.colorbar(im2, ax=axs[2])
 
+#title
+plt.suptitle("Relative Frobenius Error Comparison")
 plt.tight_layout()
 plt.show()
+"""
