@@ -111,7 +111,7 @@ def estimate_J( Y: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
 
 #TO DO: Multiregion estimate_J
 
-@jax.jit
+
 def blockwise_nmf(J,mask, D_E,D_I):
     J_plus = jnp.abs(J)  #J⁺ = |J|,  where J⁺_{ij} = |J_{ij}|
 
@@ -122,7 +122,7 @@ def blockwise_nmf(J,mask, D_E,D_I):
     # Extract excitatory and inhibitory parts
     J_E = jnp.take(J_plus, idx_E, axis=0)  # shape: (N_E, N)
     J_I = jnp.take(J_plus, idx_I, axis=0)  # shape: (N_I, N)
-   
+    
 
     N_E = J_E.shape[0]
     N_I = J_I.shape[0]
@@ -201,41 +201,8 @@ def NMF(U_init, V_init, J, max_iterations=1000, relative_error=1e-4):
     _, U_final, V_final = final_state
     return U_final, V_final
 
-"""
-key = jax.random.PRNGKey(42)
-N = 20
-
-# Generate a random "ground-truth" non-negative low-rank matrix
-true_U = jax.random.uniform(key, (N, 4))
-true_V = jax.random.uniform(key, (N, 4))
-J_true = true_U @ true_V.T  # shape: (N, N)
-
-# Add small noise to simulate realistic data
-J_noisy = J_true + 0.01 * jax.random.normal(key, (N, N))
-J_noisy = jnp.clip(J_noisy, 0.0)  # enforce non-negativity
 
 
-# Define a binary mask where first half is excitatory, rest inhibitory
-mask = jnp.array([True] * (N // 2) + [False] * (N - N // 2))  # shape (N,)
-
-# Apply blockwise NMF with rank 3 per block
-U_E, V_E, U_I, V_I = blockwise_nmf(J_noisy, mask, D_E=3, D_I=3)
-
-# Check shapes
-print("U_E shape:", U_E.shape)  # (N_E, D_E)
-print("V_E shape:", V_E.shape)  # (N, D_E)
-print("U_I shape:", U_I.shape)  # (N_I, D_I)
-print("V_I shape:", V_I.shape)  # (N, D_I)
-
-# Reconstruct and check Frobenius error
-J_E_recon = U_E @ V_E.T
-J_I_recon = U_I @ V_I.T
-J_recon = jnp.concatenate([J_E_recon, J_I_recon], axis=0)
-
-error = jnp.linalg.norm(J_noisy - J_recon) / jnp.linalg.norm(J_noisy)
-print("Relative reconstruction error:", error)
-
-"""
 
 
 # Step 6: initial A₀ = V_daleᵀ @ U

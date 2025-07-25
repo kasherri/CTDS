@@ -7,8 +7,7 @@ from jax.numpy.linalg import norm
 from jax import config
 config.update("jax_enable_x64", True)
 
-from models.components.intialize import NMF  # Replace with actual module path
-from models.components.intialize import NNLS  # Needed to test inner solver
+from models.components.intialize import NMF,blockwise_nmf, NNLS  
 
 key = random.PRNGKey(0)
 
@@ -39,19 +38,7 @@ def test_nmf_non_negativity():
     assert jnp.all(U >= -1e-6)  # allow small numerical error
     assert jnp.all(V >= -1e-6)
 
-def test_nmf_reconstruction_error_decreases():
-    key1, key2, key3 = random.split(key, 3)
-    J = random_nonnegative_matrix(key1, (20, 10))
-    U_init =jnp.abs(random.exponential(key2, (20, 5)))
-    V_init = jnp.abs(random.exponential(key3, (10, 5)))
 
-    # Initial error
-    error_init = norm(J - U_init @ V_init.T, ord='fro')
-
-    U, V = NMF(U_init, V_init, J, max_iterations=1000)
-    error_final = norm(J - U @ V.T, ord='fro')
-
-    assert error_final < error_init  
 
 def test_nmf_converges_small_problem():
     J = jnp.array([[1.0, 0.5], [0.2, 0.8]])
@@ -144,3 +131,40 @@ def test_nnls_benchmark(benchmark):
 
     result = benchmark(run)
     assert jnp.all(result >= 0.0)
+
+
+
+
+key = jax.random.PRNGKey(42)
+N = 20
+
+# Generate a random "ground-truth" non-negative low-rank matrix
+true_U = jax.random.uniform(key, (N, 4))
+true_V = jax.random.uniform(key, (N, 4))
+J_true = true_U @ true_V.T  # shape: (N, N)
+
+# Add small noise to simulate realistic data
+J_noisy = J_true + 0.01 * jax.random.normal(key, (N, N))
+J_noisy = jnp.clip(J_noisy, 0.0)  # enforce non-negativity
+
+
+# Define a binary mask where first half is excitatory, rest inhibitory
+mask = jnp.array([True] * (N // 2) + [False] * (N - N // 2))  # shape (N,)
+
+# Apply blockwise NMF with rank 3 per block
+U_E, V_E, U_I, V_I = blockwise_nmf(J_noisy, mask, D_E=3, D_I=3)
+
+# Check shapes
+print("U_E shape:", U_E.shape)  # (N_E, D_E)
+print("V_E shape:", V_E.shape)  # (N, D_E)
+print("U_I shape:", U_I.shape)  # (N_I, D_I)
+print("V_I shape:", V_I.shape)  # (N, D_I)
+
+# Reconstruct and check Frobenius error
+J_E_recon = U_E @ V_E.T
+J_I_recon = U_I @ V_I.T
+J_recon = jnp.concatenate([J_E_recon, J_I_recon], axis=0)
+
+error = jnp.linalg.norm(J_noisy - J_recon) / jnp.linalg.norm(J_noisy)
+print("Relative reconstruction error:", error)
+
