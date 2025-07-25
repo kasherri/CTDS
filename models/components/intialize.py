@@ -6,7 +6,7 @@ from jaxopt import BoxCDQP
 import jax.random as jr
 
 
-_boxCDQP = BoxCDQP(tol=1e-6) 
+_boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False) 
 
 #might change args to matvec functions
 #need to change so it constrains diagonal to 0
@@ -145,13 +145,11 @@ def blockwise_nmf(J,mask, D_E,D_I):
     
 
 
-
-
 # ------------------------------------------------------------------------------
 # Jittable Non-Negative Matrix Factorization via Alternating NNLS
 # ------------------------------------------------------------------------------
 @jax.jit
-def NMF(U_init, V_init, J, max_iterations=1000, relative_error=1e-4):
+def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
 
     def cond_fun(state):
         """
@@ -202,13 +200,51 @@ def NMF(U_init, V_init, J, max_iterations=1000, relative_error=1e-4):
     return U_final, V_final
 
 
+def build_v_dale(V1: jnp.ndarray, V2: jnp.ndarray) -> jnp.ndarray:
+    """
+    Constructs the latent feedback matrix V_Dale = [ V1  |  -V2 ],
+    where:
+      - V1 contains feedback weights for excitatory latents (non-negative),
+      - V2 contains feedback weights for inhibitory latents (flipped to be non-positive).
+    
+    Args:
+        V1: jnp.ndarray of shape (N, K1), excitatory feedback matrix (non-negative)
+        V2: jnp.ndarray of shape (N, K2), inhibitory feedback matrix (non-negative)
+    
+    Returns:
+        V_dale: jnp.ndarray of shape (N, K1 + K2)
+    """
+    V2_neg = -V2                           # Flip sign: inhibitory → non-positive
+    V_dale = jnp.concatenate([V1, V2_neg], axis=1)  # Horizontal concatenation
+    return V_dale
+
+
+def build_U(U1, U2):
+    """
+    Constructs block-diagonal emission matrix:
+        U = [[U1,  0 ],
+             [ 0,  U2]]
+    
+    Args:
+        U1: shape (NE, K1), excitatory emission matrix
+        U2: shape (NI, K2), inhibitory emission matrix
+
+    Returns:
+        U: shape (NE + NI, K1 + K2), block-diagonal emission matrix
+    """
+    NE, K1 = U1.shape
+    NI, K2 = U2.shape
+
+    top    = jnp.concatenate([U1, jnp.zeros((NE, K2))], axis=1)
+    bottom = jnp.concatenate([jnp.zeros((NI, K1)), U2], axis=1)
+
+    U = jnp.concatenate([top, bottom], axis=0)
+    return U
 
 
 
 # Step 6: initial A₀ = V_daleᵀ @ U
-#C=U
-@jax.jit
-def build_A(U: jnp.ndarray, V_dale: jnp.ndarray) -> jnp.ndarray:
+def build_A(U, V_dale):
     """
     Compute initial latent dynamics matrix:
       A = V_dale^T @ U

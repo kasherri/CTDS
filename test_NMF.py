@@ -9,6 +9,7 @@ config.update("jax_enable_x64", True)
 
 from models.components.intialize import NMF,blockwise_nmf, NNLS  
 
+#python3 -m pytest NMF.py
 key = random.PRNGKey(0)
 
 def random_nonnegative_matrix(key, shape):

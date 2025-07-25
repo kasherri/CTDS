@@ -8,7 +8,7 @@ from dynamax.linear_gaussian_ssm.inference import (
     ParamsLGSSMDynamics,
     ParamsLGSSMEmissions
 )
-from .components.ctds_dynamics import CTDSDynamics
+from components.ctds_dynamics import CTDSDynamics
 from .components.ctds_emissions import CTDSEmissions
 
 
@@ -17,7 +17,7 @@ from .components.ctds_emissions import CTDSEmissions
 class CTDSModel:
     """
     Cell-Type Dynamical System (CTDS) wrapper around Dynamax's LinearGaussianSSM.
-S
+
       1. Instantiate with dimensional and metadata information.
       2. Call `initialize()` to construct constrained A, Q, C, R matrices and initialize ParamsLGSSM.
       3. Use a trainer to run EM inference with these initialized parameters.
@@ -44,7 +44,7 @@ S
         cell_identity: jnp.ndarray,
         list_of_dimensions: jnp.ndarray,
         observations: jnp.ndarray,
-        #region_identity: Optional[jnp.ndarray] = None,
+        region_identity: Optional[jnp.ndarray] = None,
         config: Optional[Dict[str, Any]] = None
     ):
         self.num_timesteps = num_timesteps
