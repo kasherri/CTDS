@@ -4,6 +4,8 @@ import jax.numpy as jnp
 from typing import Optional
 from jaxopt import BoxCDQP
 import jax.random as jr
+from dynamax.linear_gaussian_ssm import PosteriorGSSMSmoothed
+from params import SufficientStats
 
 
 _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False) 
@@ -11,7 +13,7 @@ _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False)
 #might change args to matvec functions
 #need to change so it constrains diagonal to 0
 @jax.jit
-def solve_dale_QP(Q, c, mask):# might change name to solve_constrained_QP
+def solve_dale_QP(Q, c, mask, isDiagonalConstrained):# might change name to solve_constrained_QP
     """
     Solve a sign-constrained quadratic program with cell-type-specific constraints.
 
@@ -113,6 +115,9 @@ def estimate_J( Y: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
 
 
 def blockwise_nmf(J,mask, D_E,D_I):
+    """
+    TODO: docustring
+    """
     J_plus = jnp.abs(J)  #J⁺ = |J|,  where J⁺_{ij} = |J_{ij}|
 
     # Split J⁺ into excitatory and inhibitory blocks
@@ -251,3 +256,39 @@ def build_A(U, V_dale):
     """
     return V_dale.T @ U
 
+
+
+
+
+
+
+
+def compute_sufficient_statistics(posterior) -> SufficientStats:
+    """
+    Compute sufficient statistics from smoothed posterior for EM updates.
+
+    Args:
+        posterior: PosteriorGSSMSmoothed
+            Must have attributes:
+            - smoothed_means:        (T, K)
+            - smoothed_covariances:  (T, K, K)
+            - smoothed_cross_covariances: (T-1, K, K)
+            - marginal_loglik:       scalar
+
+    Returns:
+        SufficientStats: a NamedTuple of fixed-shape JAX arrays
+    """
+    mu = posterior.smoothed_means
+    Sigma = posterior.smoothed_covariances
+    cross = posterior.smoothed_cross_covariances
+
+    # E[z_t z_t^T] = smoothed_covariances + outer(smoothed_means, smoothed_means)
+    EzzT = Sigma + jnp.einsum("ti,tj->tij", mu, mu)
+
+    return SufficientStats(
+        latent_mean=mu,
+        latent_second_moment=EzzT,
+        cross_time_moment=cross,
+        loglik=posterior.marginal_loglik,
+        T=mu.shape[0]
+    )

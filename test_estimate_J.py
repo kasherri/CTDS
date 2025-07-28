@@ -10,7 +10,7 @@ from tqdm import tqdm
 import jax.numpy as jnp
 import numpy as np
 from functools import partial
-from models.components.intialize import estimate_J, solve_dale_QP
+from utlis import estimate_J, solve_dale_QP
 #python -m pytest test_estimate_J.py
 import mosek
 

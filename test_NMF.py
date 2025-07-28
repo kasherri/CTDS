@@ -7,7 +7,7 @@ from jax.numpy.linalg import norm
 from jax import config
 config.update("jax_enable_x64", True)
 
-from models.components.intialize import NMF,blockwise_nmf, NNLS  
+from utlis import NMF,blockwise_nmf, NNLS  
 
 #python3 -m pytest NMF.py
 key = random.PRNGKey(0)
@@ -169,3 +169,6 @@ J_recon = jnp.concatenate([J_E_recon, J_I_recon], axis=0)
 error = jnp.linalg.norm(J_noisy - J_recon) / jnp.linalg.norm(J_noisy)
 print("Relative reconstruction error:", error)
 
+
+
+#TO DO: RUN TIME PLOT COMPARISON OF custom NMF vs. Scipy NMF
