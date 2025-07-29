@@ -1,11 +1,11 @@
-
+import jax
 from typing import Optional, Any, Callable
 from jaxtyping import Array
 import jax as jnp
 from params import ParamsCTDS, SufficientStats, ParamsCTDSDynamics, ParamsCTDSEmissions, ParamsCTDSInitial
 from abc import ABC, abstractmethod
 from inference import InferenceBackend, DynamaxLGSSMBackend
-from utlis import estimate_J,blockwise_nmf, build_v_dale
+from utlis import estimate_J,blockwise_nmf, build_v_dale, solve_constrained_QP, NNLS
 
 #maybe later implement as subclass of dynamax SSM. right now dont see a reason to do so
 class BaseCTDS(ABC):
@@ -109,13 +109,77 @@ class CTDS(BaseCTDS):
         dynamics=self.dynamics_fn(V_dale, emissions.C)
         return ParamsCTDS(initial,dynamics, emissions)
     
-    def m_step(self, params: ParamsCTDS, stats) -> ParamsCTDS:
+    def m_step(self, params: ParamsCTDS, stats: SufficientStats) -> ParamsCTDS:
         """
         M-step: update model parameters from sufficient statistics.
         """
-    
-        return ParamsCTDS()
-    
+        #------------Update A---------------------
+        # We construct matrices:
+        #   X = [x_1, ..., x_{T-1}] ∈ ℝ^{D × (T-1)}  (past)
+        X= stats.latent_mean[:-1].T  # shape (D, T-1)
+        #   Y = [x_2, ..., x_T]     ∈ ℝ^{D × (T-1)}  (future)
+        Y= stats.latent_mean[1:].T  # shape (D, T-1)
+        #   Z = X.T ∈ ℝ^{(T-1) × D}  # regression features
+        Z = X.T  # shape (T-1, D)
+        
+        # Objective Function: min_a_j  (1/2) * a_jᵀ H a_j - fᵀ a_j
+        # where H = Zᵀ Z ∈ ℝ^{D × D}, f = Zᵀ y^{(j)} ∈ ℝ^D
+        H1= Z.T @ Z  # shape (D, D)
+        F1= Z @ Y  # shape (D, T-1)
+
+        #(D,) array of jnp.bool_ indicating cell type (excitatory/inhibitory)
+        cell_type_mask = params.cell_types 
+        #(D,D) array where all entries are true except diagonals
+        masks = jnp.logical_not(jnp.eye(H1.shape[0], dtype=jnp.bool_))
+
+        #vmap over each column of F and masks and each value in cell_type_mask
+        vmap_solver1= jax.vmap(solve_constrained_QP, in_axes=(None, 1,1,0))
+
+        A= vmap_solver1(H1, F1, masks, cell_type_mask)
+
+        #---------Update Q------------------------
+        S11 = jnp.sum(stats.latent_second_moment[1:], axis=0)  #sums T-1 matrices returns (D, D) matrix
+        S10 = jnp.sum(stats.cross_time_moment, axis=0)  #sums T-1 matrices returns  shape (D, D) 
+        S00 = jnp.sum(stats.latent_second_moment[:-1], axis=0)  # shape (D, D)
+
+        # Compute Q using the formula
+        # Q = 1/(T-1) * (S11 - A @ S10.T - S10 @ A.T + A @ S00 @ A.T
+        Q=1/(stats.latent_second_moment.shape[0]-1)*(S11 - A @ S10.T - S10 @ A.T + A @ S00 @ A.T)
+
+        dynamics = ParamsCTDSDynamics(A=A, Q=Q)
+        #---------Update C---------------------------
+        # Goal:Estimate C ∈ ℝ^{N × D} such that:
+        #     Y ≈ C @ X
+        #   subject to:
+        #     C ≥ 0  (elementwise non-negativity constraint)
+
+        Y_obs=self.observations # shape (N, T)
+        Ex= stats.latent_mean.T #shape (D, T)
+        H2=Ex @ Ex.T  # shape (D, D)
+        F2=Ex @ Y_obs.T  # shape (D, N)
+
+        #Vmap over N columns of F2. Each column corresponds to f= X @ y_i ∈ ℝ^D
+        vmap_solver2 = jax.vmap(NNLS, in_axes=(None, 1)) 
+        C_T= vmap_solver2(H2, F2)#shape (D, N)
+        C=C_T.T # shape (N, D)
+
+        #---------Update R----------------------------
+        Y_pred = C @ Ex  # shape (N, T)
+        resid = Y - Y_pred  # shape (N, T)
+        R_diag = jnp.mean(resid ** 2, axis=1)  # shape (N,)
+        R = jnp.diag(R_diag)
+
+        emissions = ParamsCTDSEmissions(C=C, R=R)
+        
+        #---------Update initial state-----------------
+        # Initial state mean is the first latent mean
+        initial_mean = stats.latent_mean[0]  # shape (D,)
+        # Initial state covariance is the first latent covariance
+        initial_cov = stats.latent_second_moment[0]  # shape (D,)
+
+        initial = ParamsCTDSInitial(mean=initial_mean, cov=initial_cov)
+
+        return ParamsCTDS(initial=initial, dynamics=dynamics, emissions=emissions, cell_types=params.cell_types)
 
     #def sample
     #def forecast

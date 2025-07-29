@@ -51,7 +51,8 @@ class ParamsCTDS(NamedTuple):
     initial: ParamsCTDSInitial
     dynamics: ParamsCTDSDynamics
     emissions: ParamsCTDSEmissions
-    cell_types: Float[Array, "emission_dim"]  # 1 for E, 0 for I
+    # true for excitatory, false for inhibitory
+    cell_types: jnp.ndarray  # shape (state_dim,) - boolean array indicating cell type
     #TODO: include region identity for each neuron
     #region_identity: Float[Array, "emission_dim"]  # region index for each neuron
 
@@ -85,9 +86,9 @@ class SufficientStats(NamedTuple):
     """
     Sufficient statistics for CTDS model parameters.
     Attributes:
-        latent_mean: (T, K) - E[z_t]
-        latent_second_moment: (T, K, K) - E[z_t z_t^T]
-        cross_time_moment: (T-1, K, K) - E[z_t z_{t-1}^T]
+        latent_mean: (T, D) - E[z_t]
+        latent_second_moment: (T, D, D) - E[z_t z_t^T]
+        cross_time_moment: (T-1, D, D) - E[z_t z_{t-1}^T]
         loglik: scalar - marginal log-likelihood
         T: int - number of time steps
     """

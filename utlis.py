@@ -56,7 +56,7 @@ def solve_dale_QP(Q, c, mask, isDiagonalConstrained):
 
 
 @jax.jit
-def solve_constrained_QP(Q, c, mask, isExcitatory: bool, key):
+def solve_constrained_QP(Q, c, mask, isExcitatory: bool, key=jax.random.PRNGKey(0)):
     def true_fn(args):
         """
         all entries are nonnegative except diagonals. True=Non-neggative, False=unconstrained diagonal
