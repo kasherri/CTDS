@@ -11,9 +11,8 @@ from params import SufficientStats
 _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False) 
 
 #might change args to matvec functions
-#need to change so it constrains diagonal to 0
 @jax.jit
-def solve_dale_QP(Q, c, mask, isDiagonalConstrained):# might change name to solve_constrained_QP
+def solve_dale_QP(Q, c, mask, isDiagonalConstrained):
     """
     Solve a sign-constrained quadratic program with cell-type-specific constraints.
 
@@ -47,13 +46,46 @@ def solve_dale_QP(Q, c, mask, isDiagonalConstrained):# might change name to solv
     lower = jnp.where(mask, 1e-3, -jnp.inf) #E cell lower bound is 0.0, I cell lower bound is -inf
     upper = jnp.where(mask, jnp.inf, -1e-3) # I cell upper bound is 0.0, E cell upper bound is inf
 
-    init_x = jax.random.normal(jax.random.PRNGKey(42), (D,))
+    init_x = jax.random.normal(jax.random.PRNGKey(42), (D,)) #TODO: find better way of intializing
     
     # Run the OSQP solver
     sol = _boxCDQP.run( init_x, params_obj=(Q, c),   params_ineq=(lower, upper))
   
     #return sol.params.primal[0]  # Return the optimal parameters (solution vector)
     return sol.params
+
+
+@jax.jit
+def solve_constrained_QP(Q, c, mask, isExcitatory: bool, key):
+    def true_fn(args):
+        """
+        all entries are nonnegative except diagonals. True=Non-neggative, False=unconstrained diagonal
+        """
+        Q, c, mask, key = args
+        D = Q.shape[0]
+        lower = jnp.where(mask, 0, -jnp.inf)
+        upper = jnp.where(mask, jnp.inf, jnp.inf)
+        init_x = jax.random.normal(key, (D,))
+        sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
+        return sol.params
+
+    def false_fn(args):
+        """
+        all entries are nonpositive except diagonals. True=Non-positive, False=unconstrained diagonal
+        """
+        Q, c, mask, key = args
+        D = Q.shape[0]
+        lower = jnp.where(mask, -jnp.inf, -jnp.inf)
+        upper = jnp.where(mask, 0, jnp.inf)
+        init_x = jax.random.normal(key, (D,))
+        sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
+        return sol.params
+
+    return jax.lax.cond(isExcitatory, 
+                    (Q, c, mask, key), true_fn, 
+                    (Q, c, mask, key), false_fn)
+
+
 
 @jax.jit
 def NNLS(Q, c):

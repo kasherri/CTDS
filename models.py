@@ -107,7 +107,7 @@ class CTDS(BaseCTDS):
         initial=ParamsCTDSInitial(mean = jnp.zeros(state_dim), cov = 1e-2 * jnp.eye(state_dim))
         emissions=self.emissions_fn(U_E, U_I, Y )
         dynamics=self.dynamics_fn(V_dale, emissions.C)
-        return ParamsCTDS()
+        return ParamsCTDS(initial,dynamics, emissions)
     
     def m_step(self, params: ParamsCTDS, stats) -> ParamsCTDS:
         """
@@ -116,7 +116,9 @@ class CTDS(BaseCTDS):
     
         return ParamsCTDS()
     
+
     #def sample
+    #def forecast
     #def plot latent trajectory
     #def fit EM
 
