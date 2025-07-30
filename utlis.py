@@ -12,7 +12,7 @@ _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False)
 
 #might change args to matvec functions
 @jax.jit
-def solve_dale_QP(Q, c, mask, isDiagonalConstrained):
+def solve_dale_QP(Q, c, mask):
     """
     Solve a sign-constrained quadratic program with cell-type-specific constraints.
 
@@ -56,7 +56,7 @@ def solve_dale_QP(Q, c, mask, isDiagonalConstrained):
 
 
 @jax.jit
-def solve_constrained_QP(Q, c, mask, isExcitatory: bool, key=jax.random.PRNGKey(0)):
+def solve_constrained_QP(Q, c, mask, isExcitatory, key=jax.random.PRNGKey(0)):
     def true_fn(args):
         """
         all entries are nonnegative except diagonals. True=Non-neggative, False=unconstrained diagonal

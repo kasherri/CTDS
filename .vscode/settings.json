@@ -1,9 +1,14 @@
 {
     "python.testing.pytestArgs": [
-        "models"
+        "."
     ],
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true,
     "python-envs.defaultEnvManager": "ms-python.python:system",
-    "python-envs.pythonProjects": []
+    "python-envs.pythonProjects": [],
+    "python.testing.autoTestDiscoverOnSaveEnabled": true,
+    "python.analysis.inlayHints.pytestParameters": true,
+    "python.analysis.regenerateStdLibIndices": true,
+    "python.testing.pytestPath": "/Users/pillowlab/Library/Python/3.9/lib/python/site-packages/pytest",
+    "testing.alwaysRevealTestOnStateChange": true
 }

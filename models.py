@@ -1,7 +1,7 @@
 import jax
 from typing import Optional, Any, Callable
 from jaxtyping import Array
-import jax as jnp
+import jax.numpy as jnp
 from params import ParamsCTDS, SufficientStats, ParamsCTDSDynamics, ParamsCTDSEmissions, ParamsCTDSInitial
 from abc import ABC, abstractmethod
 from inference import InferenceBackend, DynamaxLGSSMBackend
@@ -13,7 +13,8 @@ class BaseCTDS(ABC):
                  backend: InferenceBackend,
                  dynamics_fn: Callable,
                  emissions_fn: Callable,
-                 m_step: Optional[Callable] = None
+                 cell_types: Optional[Array] = None,
+                 #m_step: Optional[Callable] = None
                  ):
         """
         Abstract base class for Cell-Type Dynamical Systems (CTDS).
@@ -60,22 +61,24 @@ class CTDS(BaseCTDS):
     """
     def __init__(self, 
                  observations: Array,
-                 cell_types: Array,
+                 cell_types: Array, # shape (K,2) where K is number of cell types e.g [[0,True],[1,False],...]
+                 mask: Array, # shape (N,) where N is number of neurons True for excitatory, False for inhibitory
                  latent_dims: int
                  ):
+        self.observations = observations
         backend=DynamaxLGSSMBackend
         dynamics_fn = self._build_A
         emissions_fn = self._build_C
         super().__init__(backend, dynamics_fn, emissions_fn)
         
 
-    def _build_A(self, V_dale, U)-> ParamsCTDSDynamics:
+    def _build_A(self, V_dale, U, cell_type_dimensions) -> ParamsCTDSDynamics:
 
         A=V_dale.T @ U
         D=V_dale.shape[1]
         Q=1e-2 * jnp.eye(D)
-        
-        return ParamsCTDSDynamics(A, Q)
+
+        return ParamsCTDSDynamics(A, Q, cell_type_dimensions)
 
     def _build_C(self, U_E, U_I, Y ) -> ParamsCTDSEmissions:
         """Return emission matrix C and observation noise covariance R."""
@@ -101,17 +104,42 @@ class CTDS(BaseCTDS):
         Estimate initial parameters from observed data Y and cell-type mask.
         """
         J = estimate_J(Y, mask)
-        U_E, V_E, U_I, V_I=blockwise_nmf(jnp.abs(J), mask, D_E, D_I)
+        U_E, V_E, U_I, V_I=blockwise_nmf(J, mask, D_E, D_I)
         state_dim=D_E+D_I
         V_dale=build_v_dale(V_E, V_I)
         initial=ParamsCTDSInitial(mean = jnp.zeros(state_dim), cov = 1e-2 * jnp.eye(state_dim))
         emissions=self.emissions_fn(U_E, U_I, Y )
-        dynamics=self.dynamics_fn(V_dale, emissions.C)
-        return ParamsCTDS(initial,dynamics, emissions)
+        dynamics=self.dynamics_fn(V_dale, emissions.C, jnp.array([D_E, D_I]))
+        return ParamsCTDS(initial,dynamics, emissions, 
+                          cell_types_mask=mask)
     
+    #@jax.jit
     def m_step(self, params: ParamsCTDS, stats: SufficientStats) -> ParamsCTDS:
         """
-        M-step: update model parameters from sufficient statistics.
+        Perform the M-step of the EM algorithm: update model parameters from sufficient statistics.
+
+        Args:
+            params: ParamsCTDS
+                Current model parameters, including dynamics, emissions, and cell type information.
+            stats: SufficientStats
+                Sufficient statistics computed from the E-step. 
+                - stats.latent_mean: Array of shape (T, D), posterior means of latent states.
+                - stats.latent_second_moment: Array of shape (T, D, D), posterior second moments.
+                - stats.cross_time_moment: Array of shape (T-1, D, D), cross-covariances between consecutive latent states.
+
+        Returns:
+            Updated ParamsCTDS object with new parameters:
+                - Dynamics matrix A and noise covariance Q are updated using constrained least squares.
+                - Emission matrix C is updated using non-negative least squares.
+                - Observation noise covariance R is updated as the mean squared residual.
+                - Initial state mean and covariance are set to the first posterior mean and covariance.
+
+        The update logic is as follows:
+            - A is estimated by solving a constrained quadratic program for each latent dimension.
+            - Q is computed from the residuals of the latent dynamics.
+            - C is estimated by solving a non-negative least squares problem for each neuron.
+            - R is set to the diagonal covariance of the residuals between observed and predicted data.
+            - The initial state is set from the first timepoint's posterior statistics.
         """
         #------------Update A---------------------
         # We construct matrices:
@@ -125,17 +153,18 @@ class CTDS(BaseCTDS):
         # Objective Function: min_a_j  (1/2) * a_jᵀ H a_j - fᵀ a_j
         # where H = Zᵀ Z ∈ ℝ^{D × D}, f = Zᵀ y^{(j)} ∈ ℝ^D
         H1= Z.T @ Z  # shape (D, D)
-        F1= Z @ Y  # shape (D, T-1)
+        F1= Y @ Z  # shape (D, D)
 
         #(D,) array of jnp.bool_ indicating cell type (excitatory/inhibitory)
-        cell_type_mask = params.cell_types 
+        #cell_type_mask = params.cell_types_mask  # shape (D,)
         #(D,D) array where all entries are true except diagonals
         masks = jnp.logical_not(jnp.eye(H1.shape[0], dtype=jnp.bool_))
-
+        D_E, D_I = params.dynamics.cell_type_dimensions
+        dynamics_dale_mask = jnp.concatenate([jnp.full((D_E,), True, dtype=jnp.bool_), jnp.full((D_I,), False, dtype=jnp.bool_)]) #TODO: add as parameter to Dynamics
         #vmap over each column of F and masks and each value in cell_type_mask
         vmap_solver1= jax.vmap(solve_constrained_QP, in_axes=(None, 1,1,0))
 
-        A= vmap_solver1(H1, F1, masks, cell_type_mask)
+        A= vmap_solver1(H1, F1, masks, dynamics_dale_mask)  # shape (D, D)
 
         #---------Update Q------------------------
         S11 = jnp.sum(stats.latent_second_moment[1:], axis=0)  #sums T-1 matrices returns (D, D) matrix
@@ -146,7 +175,7 @@ class CTDS(BaseCTDS):
         # Q = 1/(T-1) * (S11 - A @ S10.T - S10 @ A.T + A @ S00 @ A.T
         Q=1/(stats.latent_second_moment.shape[0]-1)*(S11 - A @ S10.T - S10 @ A.T + A @ S00 @ A.T)
 
-        dynamics = ParamsCTDSDynamics(A=A, Q=Q)
+        dynamics = ParamsCTDSDynamics(A=A, Q=Q, cell_type_dimensions=params.dynamics.cell_type_dimensions)
         #---------Update C---------------------------
         # Goal:Estimate C ∈ ℝ^{N × D} such that:
         #     Y ≈ C @ X
@@ -160,12 +189,14 @@ class CTDS(BaseCTDS):
 
         #Vmap over N columns of F2. Each column corresponds to f= X @ y_i ∈ ℝ^D
         vmap_solver2 = jax.vmap(NNLS, in_axes=(None, 1)) 
-        C_T= vmap_solver2(H2, F2)#shape (D, N)
-        C=C_T.T # shape (N, D)
-
+        C= vmap_solver2(H2, F2) #shape (D, N)
+        #print(C)
+        print("C T shape:", C.T.shape)  # shape (N, D)
+        print("C  shape:", C.shape) 
+        
         #---------Update R----------------------------
         Y_pred = C @ Ex  # shape (N, T)
-        resid = Y - Y_pred  # shape (N, T)
+        resid = Y_obs - Y_pred  # shape (N, T)
         R_diag = jnp.mean(resid ** 2, axis=1)  # shape (N,)
         R = jnp.diag(R_diag)
 
@@ -179,7 +210,8 @@ class CTDS(BaseCTDS):
 
         initial = ParamsCTDSInitial(mean=initial_mean, cov=initial_cov)
 
-        return ParamsCTDS(initial=initial, dynamics=dynamics, emissions=emissions, cell_types=params.cell_types)
+        return ParamsCTDS(initial, dynamics, emissions, 
+                          cell_types_mask=params.cell_types_mask)
 
     #def sample
     #def forecast

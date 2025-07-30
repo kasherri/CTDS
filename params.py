@@ -26,6 +26,8 @@ class ParamsCTDSDynamics(NamedTuple):
         Float[Array, "state_dim"],
         ParameterProperties
     ]
+    cell_type_dimensions: Optional[Array]   # shape (K,) where K is number of cell types, optional for flexibility
+
 
 
 class ParamsCTDSEmissions(NamedTuple):
@@ -42,6 +44,7 @@ class ParamsCTDSEmissions(NamedTuple):
     ]
 
 
+
 class ParamsCTDS(NamedTuple):
     """
     Full CTDS model parameters.
@@ -52,9 +55,10 @@ class ParamsCTDS(NamedTuple):
     dynamics: ParamsCTDSDynamics
     emissions: ParamsCTDSEmissions
     # true for excitatory, false for inhibitory
-    cell_types: jnp.ndarray  # shape (state_dim,) - boolean array indicating cell type
+    cell_types_mask: jnp.ndarray  # shape (state_dim,) - boolean array indicating cell type
     #TODO: include region identity for each neuron
     #region_identity: Float[Array, "emission_dim"]  # region index for each neuron
+
 
     def to_lgssm(self) -> ParamsLGSSM:
         """

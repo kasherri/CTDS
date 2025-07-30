@@ -30,7 +30,7 @@ class InferenceBackend(Protocol):
         params: ParamsCTDS,
         emissions: Float[Array, "T D"],
         inputs: Optional[Float[Array, "T U"]] = None,
-    ) -> Tuple[dict, float]:
+    ):
         """
         E-step of EM: compute expected sufficient statistics and marginal log likelihood.
 
@@ -107,17 +107,29 @@ class InferenceBackend(Protocol):
 
 class DynamaxLGSSMBackend:
     def e_step(self, params, emissions, inputs=None):
+        """
+        Compute expected sufficient statistics and marginal log likelihood using the smoother.
+        """
         posterior = lgssm_smoother(params.to_lgssm(), emissions, inputs)
         stats = compute_sufficient_statistics(posterior)
         return stats
 
     def filter(self, params, emissions, inputs=None):
+        """
+        Compute forward filtered means and covariances.
+        """
         posterior = lgssm_filter(params.to_lgssm(), emissions, inputs)
         return posterior.filtered_means, posterior.filtered_covariances
 
     def smoother(self, params, emissions, inputs=None):
+        """
+        Compute posterior means and covariances for all time steps.
+        """
         posterior = lgssm_smoother(params.to_lgssm(), emissions, inputs)
         return posterior.smoothed_means, posterior.smoothed_covariances
 
     def posterior_sample(self, key, params, emissions, inputs=None):
+        """
+        Sample a posterior trajectory of latent states.
+        """
         return lgssm_posterior_sample(key, params.to_lgssm(), emissions, inputs)
