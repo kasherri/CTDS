@@ -2,7 +2,8 @@ from typing import Protocol, Tuple, Union, Optional
 from jaxtyping import Array, Float
 import jax.numpy as jnp
 
-from dynamax.linear_gaussian_ssm.parallel_inference import lgssm_smoother, lgssm_filter, lgssm_posterior_sample
+#TODO: ask if i can make linear_gaussian jittable
+from dynamax.linear_gaussian_ssm.inference import lgssm_smoother, lgssm_filter, lgssm_posterior_sample
 from params import ParamsCTDS
 from utlis import compute_sufficient_statistics
 
@@ -106,7 +107,7 @@ class InferenceBackend(Protocol):
 
 
 class DynamaxLGSSMBackend:
-    def e_step(self, params, emissions, inputs=None):
+    def e_step(self, params: ParamsCTDS, emissions, inputs=None):
         """
         Compute expected sufficient statistics and marginal log likelihood using the smoother.
         """
@@ -114,22 +115,35 @@ class DynamaxLGSSMBackend:
         stats = compute_sufficient_statistics(posterior)
         return stats
 
-    def filter(self, params, emissions, inputs=None):
+    def filter(self,params: ParamsCTDS, emissions, inputs=None):
         """
         Compute forward filtered means and covariances.
         """
         posterior = lgssm_filter(params.to_lgssm(), emissions, inputs)
         return posterior.filtered_means, posterior.filtered_covariances
 
-    def smoother(self, params, emissions, inputs=None):
+    def smoother(self, params: ParamsCTDS, emissions, inputs=None):
         """
         Compute posterior means and covariances for all time steps.
         """
         posterior = lgssm_smoother(params.to_lgssm(), emissions, inputs)
         return posterior.smoothed_means, posterior.smoothed_covariances
 
-    def posterior_sample(self, key, params, emissions, inputs=None):
+    def posterior_sample(self, key, params: ParamsCTDS, emissions, inputs=None):
         """
         Sample a posterior trajectory of latent states.
         """
         return lgssm_posterior_sample(key, params.to_lgssm(), emissions, inputs)
+
+
+
+
+
+
+
+
+
+
+
+
+

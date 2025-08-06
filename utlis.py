@@ -1,11 +1,11 @@
 import jax
 import jax.numpy as jnp
 #from jaxopt import BoxOSQP
-from typing import Optional
+from typing import Optional, List
 from jaxopt import BoxCDQP
 import jax.random as jr
 from dynamax.linear_gaussian_ssm import PosteriorGSSMSmoothed
-from params import SufficientStats
+from params import SufficientStats, ParamsCTDSConstraints
 
 
 _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False) 
@@ -87,6 +87,8 @@ def solve_constrained_QP(Q, c, mask, isExcitatory, key=jax.random.PRNGKey(0)):
 
 
 
+
+#TODO: change to implementing with optax
 @jax.jit
 def NNLS(Q, c):
     lower = jnp.zeros(c.shape[0])  # Non-negative constraint
@@ -143,48 +145,62 @@ def estimate_J( Y: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
     return J
 
 
-#TO DO: Multiregion estimate_J
-
-
-def blockwise_nmf(J,mask, D_E,D_I):
+#does not need to be jittable since it iterates over small number of cell types
+def blockwise_NMF(J, cell_constraints:ParamsCTDSConstraints):
     """
-    TODO: docustring
+    Perform block-wise Non-negative Matrix Factorization (NMF) on the absolute Dale matrix |J|.
+    Each block corresponds to a specific cell type, and NMF is applied separately to each block.
+    Args:
+        J: (N, N) Dale matrix where J[i, j] is the weight from neuron j to neuron i.
+        cell_constraints: ParamsCellConstraints containing cell type information.
+            - cell_types: Array of shape (k,) with unique cell type labels.
+            - cell_type_dimensions: Array of shape (k,) with latent dimensions per cell type.
+            - cell_type_mask: Array of shape (N,) with cell type label for each neuron.
+    Returns:
+        List of (U, V) tuples for each cell type, where:
+            - U: jnp.ndarray(N_type, D_type) matrix of basis vectors for this cell type.
+            - V: jnp.ndarray(N, D_type) matrix of coefficients for this cell type.
     """
-    J_plus = jnp.abs(J)  #J⁺ = |J|,  where J⁺_{ij} = |J_{ij}|
-
-    # Split J⁺ into excitatory and inhibitory blocks
-    idx_E = jnp.nonzero(jnp.where(mask, 1, 0))[0]
-    idx_I = jnp.nonzero(jnp.where(~mask, 1, 0))[0]
-
-    # Extract excitatory and inhibitory parts
-    J_E = jnp.take(J_plus, idx_E, axis=0)  # shape: (N_E, N)
-    J_I = jnp.take(J_plus, idx_I, axis=0)  # shape: (N_I, N)
+    J_plus = jnp.abs(J)  # J⁺ = |J|, where J⁺_{ij} = |J_{ij}|
     
-
-    N_E = J_E.shape[0]
-    N_I = J_I.shape[0]
-
-    # Initialize factors for excitatory and inhibitory blocks
-    U_E=jax.random.uniform(jax.random.PRNGKey(0), (N_E, D_E), minval=0.1, maxval=1.0)
-    U_I=jax.random.uniform(jax.random.PRNGKey(1), (N_I, D_I), minval=0.1, maxval=1.0)
-    V_E=jax.random.uniform(jax.random.PRNGKey(2), (J_plus.shape[0], D_E), minval=0.1, maxval=1.0) #shape: (N, D_E)
-    V_I=jax.random.uniform(jax.random.PRNGKey(3), (J_plus.shape[0], D_I), minval=0.1, maxval=1.0) #shape: (N, D_I)
-
-    #U_E, V_E = init_factors(jax.random.PRNGKey(0),shape_u=(N_E, D_E), shape_v=(J_plus.shape[0], D_E))
-    #U_I, V_I = init_factors(jax.random.PRNGKey(1),shape_u=(N_I, D_I), shape_v=(J_plus.shape[0], D_I))
-
-    # We apply NMF to each block using alternating non-negative least squares (NNLS).
-    U_E, V_E = NMF(U_E, V_E, J_E)  # shape: (N_E, D_E), (N, D_E)
-    U_I, V_I = NMF(U_I, V_I, J_I) # shape: (N_I, D_I), (N, D_I)
-
-    return U_E, V_E, U_I, V_I
-
+    cell_types = cell_constraints.cell_types
+    cell_type_dimensions = cell_constraints.cell_type_dimensions
+    cell_type_mask = cell_constraints.cell_type_mask 
     
+    N = J_plus.shape[0]
+    num_cell_types = len(cell_types)
+
+    # Initialize list to store (U, V) tuples for each cell type
+    block_factors = []
+
+    # using for loop since number of cell types is small and fixed
+    for i, cell_type in enumerate(cell_types):
+        # Get indices for this cell type
+        idx_type = jnp.nonzero(jnp.where(cell_type_mask == cell_type, 1, 0))[0]
+        
+        # Extract block for this cell type
+        J_type = jnp.take(J_plus, idx_type, axis=0)  # shape: (N_type, N)
+        
+        N_type = J_type.shape[0]
+        D_type = int(cell_type_dimensions[i])
+        
+        # Initialize factors for this cell type block
+        U_type = jax.random.uniform(jax.random.PRNGKey(i), (N_type, D_type), minval=0.1, maxval=1.0)
+        V_type = jax.random.uniform(jax.random.PRNGKey(i + num_cell_types), (N, D_type), minval=0.1, maxval=1.0)
+        
+        # Apply NMF to this block using alternating non-negative least squares (NNLS)
+        U_type, V_type = NMF(U_type, V_type, J_type)
+        
+        # Store the (U, V) tuple for this cell type
+        block_factors.append((U_type, V_type))
+    
+    return block_factors
 
 
-# ------------------------------------------------------------------------------
-# Jittable Non-Negative Matrix Factorization via Alternating NNLS
-# ------------------------------------------------------------------------------
+
+
+
+
 @jax.jit
 def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
 
@@ -237,7 +253,7 @@ def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
     return U_final, V_final
 
 
-def build_v_dale(V1: jnp.ndarray, V2: jnp.ndarray) -> jnp.ndarray:
+def build_v_dale(V_list:List) -> jnp.ndarray:
     """
     Constructs the latent feedback matrix V_Dale = [ V1  |  -V2 ],
     where:
@@ -324,3 +340,41 @@ def compute_sufficient_statistics(posterior) -> SufficientStats:
         loglik=posterior.marginal_loglik,
         T=mu.shape[0]
     )
+
+
+
+
+#TO DO: Multiregion estimate_J
+
+def simple_blockwise_nmf(J,mask, D_E,D_I):
+    """
+    TODO: docustring
+    """
+    J_plus = jnp.abs(J)  #J⁺ = |J|,  where J⁺_{ij} = |J_{ij}|
+
+    # Split J⁺ into excitatory and inhibitory blocks
+    idx_E = jnp.nonzero(jnp.where(mask, 1, 0))[0]
+    idx_I = jnp.nonzero(jnp.where(~mask, 1, 0))[0]
+
+    # Extract excitatory and inhibitory parts
+    J_E = jnp.take(J_plus, idx_E, axis=0)  # shape: (N_E, N)
+    J_I = jnp.take(J_plus, idx_I, axis=0)  # shape: (N_I, N)
+    
+
+    N_E = J_E.shape[0]
+    N_I = J_I.shape[0]
+
+    # Initialize factors for excitatory and inhibitory blocks
+    U_E=jax.random.uniform(jax.random.PRNGKey(0), (N_E, D_E), minval=0.1, maxval=1.0)
+    U_I=jax.random.uniform(jax.random.PRNGKey(1), (N_I, D_I), minval=0.1, maxval=1.0)
+    V_E=jax.random.uniform(jax.random.PRNGKey(2), (J_plus.shape[0], D_E), minval=0.1, maxval=1.0) #shape: (N, D_E)
+    V_I=jax.random.uniform(jax.random.PRNGKey(3), (J_plus.shape[0], D_I), minval=0.1, maxval=1.0) #shape: (N, D_I)
+
+    #U_E, V_E = init_factors(jax.random.PRNGKey(0),shape_u=(N_E, D_E), shape_v=(J_plus.shape[0], D_E))
+    #U_I, V_I = init_factors(jax.random.PRNGKey(1),shape_u=(N_I, D_I), shape_v=(J_plus.shape[0], D_I))
+
+    # We apply NMF to each block using alternating non-negative least squares (NNLS).
+    U_E, V_E = NMF(U_E, V_E, J_E)  # shape: (N_E, D_E), (N, D_E)
+    U_I, V_I = NMF(U_I, V_I, J_I) # shape: (N_I, D_I), (N, D_I)
+
+    return U_E, V_E, U_I, V_I

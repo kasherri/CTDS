@@ -1,11 +1,12 @@
+from ast import Tuple
 import jax
 from typing import Optional, Any, Callable
 from jaxtyping import Array
 import jax.numpy as jnp
-from params import ParamsCTDS, SufficientStats, ParamsCTDSDynamics, ParamsCTDSEmissions, ParamsCTDSInitial
+from params import ParamsCTDS, SufficientStats, ParamsCTDSDynamics, ParamsCTDSEmissions, ParamsCTDSInitial, ParamsCTDSConstraints
 from abc import ABC, abstractmethod
 from inference import InferenceBackend, DynamaxLGSSMBackend
-from utlis import estimate_J,blockwise_nmf, build_v_dale, solve_constrained_QP, NNLS
+from utlis import estimate_J,blockwise_NMF, build_v_dale, solve_constrained_QP, NNLS
 
 #maybe later implement as subclass of dynamax SSM. right now dont see a reason to do so
 class BaseCTDS(ABC):
@@ -13,7 +14,7 @@ class BaseCTDS(ABC):
                  backend: InferenceBackend,
                  dynamics_fn: Callable,
                  emissions_fn: Callable,
-                 cell_types: Optional[Array] = None,
+                 constraints: Optional[ParamsCTDSConstraints]=None,
                  #m_step: Optional[Callable] = None
                  ):
         """
@@ -27,10 +28,10 @@ class BaseCTDS(ABC):
         self.backend = backend
         self.dynamics_fn = dynamics_fn
         self.emissions_fn = emissions_fn
-    
+        self.constraints = constraints
 
     @abstractmethod
-    def initialize_params(self, Y: Array, mask: Array, **kwargs) -> ParamsCTDS:
+    def initialize(self, Y: Array, mask: Array, **kwargs) -> ParamsCTDS:
         """Model-specific initialization."""
         ...
 
@@ -57,62 +58,103 @@ class BaseCTDS(ABC):
 
 class CTDS(BaseCTDS):
     """
-  
+    #TODO: add redion idenity
     """
     def __init__(self, 
                  observations: Array,
-                 cell_types: Array, # shape (K,2) where K is number of cell types e.g [[0,True],[1,False],...]
-                 mask: Array, # shape (N,) where N is number of neurons True for excitatory, False for inhibitory
-                 latent_dims: int
+                 cell_types:  Array, #(k,) where k is number of cell types. contains cell type labels
+                 cell_sign: Array, #(k,) where k is number of cell types. values are 1 for excitatory, -1 for inhibitory
+                 cell_type: Array, #(k,) where k is number of cell types. contains latent dimensions for each cell type
+                 cell_type_mask: Array, #(N,) where N is number of neurons. contains cell type label for each neuron
+                 region_identity: Optional[Array] = None,
                  ):
         self.observations = observations
-        backend=DynamaxLGSSMBackend
-        dynamics_fn = self._build_A
-        emissions_fn = self._build_C
-        super().__init__(backend, dynamics_fn, emissions_fn)
+        self.inference_backend = DynamaxLGSSMBackend
+        self.dynamics_fn = self._initialize_dynamics
+        self.emissions_fn = self._initialize_emissions
+        self.constraints = ParamsCTDSConstraints(
+            cell_types=cell_types,
+            cell_sign=cell_sign,
+            cell_type_dimensions=cell_type,
+            cell_type_mask=cell_type_mask
+        )
+        #super().__init__(inference_backend, dynamics_fn, emissions_fn)
         
 
-    def _build_A(self, V_dale, U, cell_type_dimensions) -> ParamsCTDSDynamics:
+    def _initialize_dynamics(self, V_list, U) -> ParamsCTDSDynamics:
+        #build V_dale 
+        #V_list should have have the same length and order as cell_types and cell_sign
+        assert len(V_list) == len(self.constraints.cell_types), "Number of V matrices must match number of cell types."
+        V_dale_list = []
+        for i in range(len(V_list)):
+            if self.constraints.cell_sign[i] == -1:
+                V_dale_list.append(-V_list[i])  # Invert sign for inhibitory cell types
+            else:
+                V_dale_list.append(V_list[i])
+ 
+        V_dale = jnp.concatenate(V_dale_list, axis=1)
 
         A=V_dale.T @ U
         D=V_dale.shape[1]
         Q=1e-2 * jnp.eye(D)
 
-        return ParamsCTDSDynamics(A, Q, cell_type_dimensions)
+        return ParamsCTDSDynamics(weights=A,cov=Q)
 
-    def _build_C(self, U_E, U_I, Y ) -> ParamsCTDSEmissions:
-        """Return emission matrix C and observation noise covariance R."""
-        NE, K1 = U_E.shape
-        NI, K2 = U_I.shape
-
-        top    = jnp.concatenate([U_E, jnp.zeros((NE, K2))], axis=1)
-        bottom = jnp.concatenate([jnp.zeros((NI, K1)), U_I], axis=1)
-        # Mean across time (axis 1 = timepoints)
-        mean_Y = jnp.mean(Y, axis=1, keepdims=True)      # shape (N, 1)
-        # Per-neuron variance
-        var_Y = jnp.mean((Y - mean_Y)**2, axis=1)        # shape (N,)
-        # floor variance to prevent instability
-        var_Y = jnp.maximum(var_Y, 1e-6)
-        diag_R = 1 * var_Y                           # shape (N,)
+    def _initialize_emissions(self, Y, U_list, state_dim) -> ParamsCTDSEmissions:
+        #the number of columns K of each U in U_list should add up to state_dim D
+        assert sum(U.shape[1] for U in U_list) == state_dim, "Latent dimensions do not match state dimension."
         
-        R=jnp.diag(diag_R)                          # shape (N, N)
-        C = jnp.concatenate([top, bottom], axis=0)
-        return ParamsCTDSEmissions(C, R)
+        #------------Compute C---------------------
+        # create block-diagonal emission matrix
+        C_blocks = []
+        col_start = 0
+        
+        for U in U_list:
+            N_type, K_type = U.shape
+            
+            # create padded block: [zeros_left, U, zeros_right]
+            left_pad = jnp.zeros((N_type, col_start))
+            right_pad = jnp.zeros((N_type, state_dim - col_start - K_type))
+            
+            C_block = jnp.concatenate([left_pad, U, right_pad], axis=1)
+            C_blocks.append(C_block)
+            
+            col_start += K_type
+        
+        # concatenate vertically to form complete emission matrix
+        C = jnp.concatenate(C_blocks, axis=0)  # Shape: (total_neurons, state_dim)
+        
+        #------------Compute R------------------
+        mean_Y = jnp.mean(Y, axis=1, keepdims=True)
+        var_Y = jnp.mean((Y - mean_Y)**2, axis=1)
+        var_Y = jnp.maximum(var_Y, 1e-6)  # Floor for numerical stability
+        
+        R = jnp.diag(var_Y)  # Shape: (total_neurons, total_neurons)
+        
+        return ParamsCTDSEmissions(weights=C, cov=R)
 
-    def initialize_params(self, Y: Array, mask: Array, D_E:int, D_I:int, **kwargs) -> ParamsCTDS:
+
+    def initialize(self) -> ParamsCTDS:
         """
         Estimate initial parameters from observed data Y and cell-type mask.
         """
-        J = estimate_J(Y, mask)
-        U_E, V_E, U_I, V_I=blockwise_nmf(J, mask, D_E, D_I)
-        state_dim=D_E+D_I
-        V_dale=build_v_dale(V_E, V_I)
+        Y=self.observations  # (N, T) where N is number of neurons, T is number of time steps
+        mask=jnp.where(self.constraints.dale_mask==1, True, False)  # (N,) where N is number of neurons
+        J = estimate_J(Y, mask) #TODO: UPDATE NMF and estimate J to take dale_mask not true or false mask
+        block_factors = blockwise_NMF(J, self.constraints)
+        state_dim=int(jnp.sum(self.constraints.cell_type_dimensions)) # total state dimension across all cell types
+        U_list=[tup[0] for tup in block_factors]  # list of (N, K) matrices for each cell type
+        V_list=[tup[1] for tup in block_factors]  # list of (N, K) matrices for each cell type
+        #initial param for CTDSParams
         initial=ParamsCTDSInitial(mean = jnp.zeros(state_dim), cov = 1e-2 * jnp.eye(state_dim))
-        emissions=self.emissions_fn(U_E, U_I, Y )
-        dynamics=self.dynamics_fn(V_dale, emissions.C, jnp.array([D_E, D_I]))
-        return ParamsCTDS(initial,dynamics, emissions, 
-                          cell_types_mask=mask)
-    
+
+        #Initalize emissions
+        emissions = self._initialize_emissions(Y, U_list, state_dim)
+        #Initalize dynamics
+        dynamics = self._initialize_dynamics(V_list, emissions.weights)
+
+        return ParamsCTDS(initial,dynamics, emissions, self.constraints)
+
     #@jax.jit
     def m_step(self, params: ParamsCTDS, stats: SufficientStats) -> ParamsCTDS:
         """
