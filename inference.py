@@ -6,7 +6,8 @@ import jax.numpy as jnp
 from dynamax.linear_gaussian_ssm.inference import lgssm_smoother, lgssm_filter, lgssm_posterior_sample
 from params import ParamsCTDS
 from utlis import compute_sufficient_statistics
-
+import jax
+from functools import partial
 
 class InferenceBackend(Protocol):
     """
@@ -107,22 +108,27 @@ class InferenceBackend(Protocol):
 
 
 class DynamaxLGSSMBackend:
-    def e_step(self, params: ParamsCTDS, emissions, inputs=None):
+    #@partial(jax.jit, static_argnums=0)
+    @staticmethod
+    def e_step( params: ParamsCTDS, emissions, inputs=None):
         """
         Compute expected sufficient statistics and marginal log likelihood using the smoother.
         """
+        print("emissions shape", emissions.shape)
+        print("lggsm emission shape", params.to_lgssm().emissions.weights.shape)
         posterior = lgssm_smoother(params.to_lgssm(), emissions, inputs)
         stats = compute_sufficient_statistics(posterior)
-        return stats
+        return stats,  stats.loglik
 
+    
     def filter(self,params: ParamsCTDS, emissions, inputs=None):
         """
         Compute forward filtered means and covariances.
         """
         posterior = lgssm_filter(params.to_lgssm(), emissions, inputs)
         return posterior.filtered_means, posterior.filtered_covariances
-
-    def smoother(self, params: ParamsCTDS, emissions, inputs=None):
+    @staticmethod
+    def smoother( params: ParamsCTDS, emissions, inputs=None):
         """
         Compute posterior means and covariances for all time steps.
         """

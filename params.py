@@ -40,6 +40,7 @@ class ParamsCTDSDynamics(NamedTuple):
     input_weights: Optional[Union[ParameterProperties,
                     Float[Array, "D input_dim"],
                     Float[Array, "T D input_dim"]]] = None
+    dynamics_mask: Optional[Array] = None  # (D, 1) where D is number of latent dimensions, 1 for excitatory, -1 for inhibitory, 0 for unassigned
 
 
 
@@ -65,15 +66,19 @@ class ParamsCTDSConstraints(NamedTuple):
     Constraints for CTDS model parameters to enforce biological plausibility.
     Attributes:
         cell_types (Array): (K, 1) array where K is number of cell types containing cell type labels.
+                            Must be a contiguous range of integers from 0 to K-1 (i.e., [0, 1, ..., K-1]) 
+                            so that cell_type_mask can be used as an index into cell_sign.
         cell_sign (Array): (K, 1) array where K is number of cell types; values are 1 for excitatory, -1 for inhibitory.
         cell_type_dimensions (Array): (K, 1) array where K is number of cell types containing cell type dimensions.    
-        dale_mask (Array): (N, 1) where N is number of neurons; 1 for excitatory, -1 for inhibitory, 0 for unassigned.
+        cell_type_mask (Array): (N, 1) #(N,) where N is number of neurons. contains cell type label for each neuron
+
+    Note: cell_type_mask contains labels for each neuron not sign types. is different from dynamics.dynamics_mask. 
     """
     cell_types: Array #(k,1) array where k is number of cell types containing cell type labes
     cell_sign: Array #(k,1) array where k is number of cell types values are 1 for excitatory, -1 for inhibitory, 0 for
     cell_type_dimensions: Array #(k,1) array where k is number of cell types containing cell type dimensions
-    cell_type_mask: Array #(N,1) where N is number of neurons, 1 for excitatory, -1 for inhibitory, 0 for unassigned
-    dale_mask: Optional[Array] = None  # (N, 1) where N is number of neurons, 1 for excitatory, -1 for inhibitory, 0 for unassigned
+    cell_type_mask: Array  #(N, 1) where N is number of neurons. contains cell type label for each neuron
+    
 
 class ParamsCTDS(NamedTuple):
     """
@@ -85,6 +90,7 @@ class ParamsCTDS(NamedTuple):
     dynamics: ParamsCTDSDynamics
     emissions: ParamsCTDSEmissions
     constraints: ParamsCTDSConstraints
+    observations: Optional[Array]  # Optional observed data for the model, e.g., spike counts or firing rates
 
 
     #TODO: include region identity for each neuron region_identity: Float[Array, "emission_dim"]  # region index for each neuron
@@ -148,14 +154,14 @@ class SufficientStats(NamedTuple):
     """
     Sufficient statistics for CTDS model parameters.
     Attributes:
-        latent_mean: (T, D) - E[z_t]
-        latent_second_moment: (T, D, D) - E[z_t z_t^T]
-        cross_time_moment: (T-1, D, D) - E[z_t z_{t-1}^T]
+        latent_mean: (T, D)  E[x_t]
+        latent_second_moment: (T, D, D)  E[x_t x_t^T]
+        cross_time_moment: (T-1, D, D)  E[x_t x_{t-1}^T]
         loglik: scalar - marginal log-likelihood
         T: int - number of time steps
     """
-    latent_mean: jnp.ndarray             # shape (T, K)       - E[z_t]
-    latent_second_moment: jnp.ndarray           # shape (T, K, K)    - E[z_t z_t^T]
-    cross_time_moment: jnp.ndarray      # shape (T-1, K, K)  - E[z_t z_{t-1}^T]
+    latent_mean: jnp.ndarray             # shape (T, K)        E[x_t]
+    latent_second_moment: jnp.ndarray           # shape (T, K, K)     E[x_t x_t^T]
+    cross_time_moment: jnp.ndarray      # shape (T-1, K, K)  - E[x_t x_{t-1}^T]
     loglik: float               # scalar             - marginal log-likelihood
     T: int                      # number of time steps

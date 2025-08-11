@@ -10,5 +10,8 @@
     "python.analysis.inlayHints.pytestParameters": true,
     "python.analysis.regenerateStdLibIndices": true,
     "python.testing.pytestPath": "/Users/pillowlab/Library/Python/3.9/lib/python/site-packages/pytest",
-    "testing.alwaysRevealTestOnStateChange": true
+    "testing.alwaysRevealTestOnStateChange": true,
+    "env": {
+        "JAX_TRACEBACK_FILTERING": "off"
+    }
 }
