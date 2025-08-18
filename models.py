@@ -409,9 +409,12 @@ class CTDS(SSM):
 
             return params, m_step_state, lp
 
-        log_probs = [0.01]
+        log_probs = []
         m_step_state = self.initialize_m_step_state(params, None)
-        pbar = progress_bar(range(num_iters)) if verbose else range(num_iters)
+        params, m_step_state, marginal_logprob = em_step(params, m_step_state)
+        log_probs.append(marginal_logprob)
+
+        pbar = progress_bar(range(1, num_iters)) if verbose else range(num_iters)
         for i in pbar:
             params, m_step_state, marginal_logprob = em_step(params, m_step_state)
             print(f"Iteration {i}: log-likelihood = {marginal_logprob}")
