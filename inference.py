@@ -118,8 +118,8 @@ class DynamaxLGSSMBackend:
         stats = compute_sufficient_statistics(posterior)
         return stats,  stats.loglik
 
-    
-    def filter(self,params: ParamsCTDS, emissions, inputs=None):
+    @staticmethod
+    def filter(params: ParamsCTDS, emissions, inputs=None):
         """
         Compute forward filtered means and covariances.
         """

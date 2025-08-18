@@ -443,12 +443,12 @@ class CTDS(SSM):
     
     def log_prob(self, params, states, emissions, inputs = None):
         return super().log_prob(params, states, emissions, inputs)
-    
-    def filter(self, params, emissions, inputs = None):
+
+    def filter(self, params: ParamsCTDS, emissions, inputs=None):
         return DynamaxLGSSMBackend.filter(params, emissions, inputs)
 
     @staticmethod
-    def smoother(params, emissions, inputs=None):
+    def smoother(params: ParamsCTDS, emissions, inputs=None):
         return DynamaxLGSSMBackend.smoother(params, emissions, inputs)
 
     def marginal_log_prob(self, params, emissions, inputs=None):
