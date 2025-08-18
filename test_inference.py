@@ -7,8 +7,7 @@ from params import (
 )
 from models import CTDS
 from inference import DynamaxLGSSMBackend
-from dynamax.linear_gaussian_ssm import ParamsLGSSM, ParamsLGSSMInitial, ParamsLGSSMDynamics, ParamsLGSSMEmissions
-
+from dynamax.linear_gaussian_ssm import ParamsLGSSM
 
 class TestParamsCTDS:
     """Test the ParamsCTDS class and its methods."""

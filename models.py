@@ -4,12 +4,12 @@ from fastprogress.fastprogress import progress_bar
 from typing import Optional, Any, Callable, Tuple, Union
 from jaxtyping import Array, Float, Real
 import jax.numpy as jnp
-from params import ParamsCTDS, SufficientStats, ParamsCTDSDynamics, ParamsCTDSEmissions, ParamsCTDSInitial, ParamsCTDSConstraints
+from params import ParamsCTDS, SufficientStats, ParamsCTDSDynamics, ParamsCTDSEmissions, ParamsCTDSInitial, ParamsCTDSConstraints, M_Step_State
 from abc import ABC, abstractmethod
 from inference import InferenceBackend, DynamaxLGSSMBackend
 from tensorflow_probability.substrates.jax import distributions as tfd
 
-from utlis import estimate_J,blockwise_NMF, build_v_dale, solve_constrained_QP, NNLS
+from utlis import estimate_J,blockwise_NMF, solve_constrained_QP, NNLS, check_qp_condition
 from functools import partial
 from dynamax.ssm import SSM
 jax.config.update("jax_enable_x64", True)
@@ -212,6 +212,8 @@ class CTDS(SSM):
         """
         Estimate initial parameters from observed data Y and cell-type mask.
         """
+        #first check that observation has shape (N, T)
+        assert observations.shape[0] == self.emission_dim, "Observations should have shape (N, T) where N is number of neurons and T is number of time steps."
         Y=observations  # (N, T) where N is number of neurons, T is number of time steps
         
         # Create Dale mask with True for Excitatory neurons and False for Inhibitory neurons
@@ -258,14 +260,15 @@ class CTDS(SSM):
         """
         return DynamaxLGSSMBackend.e_step(params, emissions, inputs)
     def initialize_m_step_state(self, params, props: Optional[ParamsCTDS]=None):
-        return None  # No state needed for M-step in this implementation
+        return M_Step_State(0, jnp.array([0.0]), jnp.array([0.0]), jnp.array([0.0]), jnp.array([0.0]))
 
-    
+    #jit does not work on cpu
+    #@partial(jax.jit, static_argnums=0
     def m_step(self,
                params: ParamsCTDS,
                props: Optional[ParamsCTDS], # unused here just for compatibility
                batch_stats: SufficientStats, #batch of sufficient statistics
-               m_step_state: Optional[Any] = None  # may be MStepStateCTDS later
+               m_step_state: Optional[Any] 
                ) -> Tuple[ParamsCTDS, Optional[Any]]:
         """
         M-step that supports batches of sufficient statistics from multiple sequences.
@@ -278,6 +281,8 @@ class CTDS(SSM):
         Returns:
             Updated CTDS parameters and (unchanged) M-step state.   
         """
+        #TODO: add conditional to check if batch_stats has a batch dimension
+        
         #first we make sure every parameter in batch_stats has a batch dimension even if size 1
         assert batch_stats.latent_mean.ndim == 3, "latent_mean should have shape (batch_size, T, D). For single sequence, use shape (1, T, D)"
         assert batch_stats.latent_second_moment.ndim == 4, "latent_second_moment should have shape (batch_size, T, D, D). For single sequence, use shape (1, T, D, D)"
@@ -289,8 +294,6 @@ class CTDS(SSM):
         latent_mean = jnp.mean(batch_stats.latent_mean, axis=0)                     # (T, K)
         latent_second_moment = jnp.mean(batch_stats.latent_second_moment, axis=0)  # (T, K, K)
         cross_time_moment = jnp.mean(batch_stats.cross_time_moment, axis=0)        # (T−1, K, K)
-
-
         stats = SufficientStats(
             latent_mean=latent_mean,
             latent_second_moment=latent_second_moment,
@@ -298,98 +301,102 @@ class CTDS(SSM):
             loglik=0.0,  # optional, unused in M-step
             T=latent_mean.shape[0]
         )
-
-        def _single_m_step(params: ParamsCTDS, stats: SufficientStats) -> ParamsCTDS:
-            """
-            Perform the M-step of the EM algorithm: update model parameters from sufficient statistics.
-            Args:
-                params: Current CTDS parameters.
-                stats: Sufficient statistics computed from the E-step.
-
-            Returns:
-                Updated CTDS parameters.
-            """
-            T=stats.T
-            #------------Update A---------------------
-            # We construct matrices:
-            #   X = [x_1, ..., x_{T-1}] ∈ ℝ^{D × (T-1)}  (past)
-            X= stats.latent_mean[:-1].T  # shape (D, T-1)
-            #   Y = [x_2, ..., x_T]     ∈ ℝ^{D × (T-1)}  (future)
-            Y= stats.latent_mean[1:].T  # shape (D, T-1)
-            #   Z = X.T ∈ ℝ^{(T-1) × D}=stats.latent_mean[:-1]  # regression features 
-            
-            # Objective Function: min_a_j  (1/2) * a_jᵀ H a_j - fᵀ a_j
-            # where H = Zᵀ Z ∈ ℝ^{D × D}, f = Zᵀ y^{(j)} ∈ ℝ^D= X.
-            H1 = X @ X.T  #equiv to X @ X.T
-            F1= Y @ X.T  # shape (D, D)
+        T=stats.T
+        #------------Update A---------------------
         
-            masks = jnp.logical_not(jnp.eye(H1.shape[0], dtype=jnp.bool_))#(D,D) array where all entries are true except diagonals
-            cell_type_mask = jnp.where(params.dynamics.dynamics_mask==-1, False, True) # shape (D,) 
-
-            vmap_solver1 = jax.vmap(solve_constrained_QP, in_axes=(None, 1,1,0))
-
-            A= vmap_solver1(H1, F1, masks, cell_type_mask)  # shape (D, D)
-
-            #---------Update Q------------------------
-            # Q = (1/(T-1)) * sum_{t=2}^T [E[x_t x_t^T] - A E[x_{t-1} x_t^T]^T - E[x_t x_{t-1}^T] A^T + A E[x_{t-1} x_{t-1}^T] A^T]
-            #   =(1/(T-1)) * sum_{t=2}^T [S11 - A @ S10.T - S10 @ A.T + A @ S00 @ A.T]
-            
-            S11 = jnp.sum(stats.latent_second_moment[1:], axis=0)  #sums T-1 matrices returns (D, D) matrix
-            S10 = jnp.sum(stats.cross_time_moment, axis=0)  #sums T-1 matrices returns  shape (D, D) 
-            S00 = jnp.sum(stats.latent_second_moment[:-1], axis=0)  # shape (D, D)        # Compute Q using the formula
-            # Q = 1/(T-1) * (S11 - A @ S10.T - S10 @ A.T + A @ S00 @ A.T
-            Q=(1/(T-1)) *(S11 - A @ S10.T - S10 @ A.T + A @ S00 @ A.T)
-
-            dynamics = ParamsCTDSDynamics(weights=A, cov=Q, dynamics_mask=params.dynamics.dynamics_mask)
-            #---------Update C---------------------------
-            # Goal:Estimate C ∈ ℝ^{N × D} such that:
-            #     Y ≈ C @ X
-            #   subject to:
-            #     C ≥ 0  (elementwise non-negativity constraint)
-
-            Y_obs=params.observations # shape (N, T)
-            Ex= stats.latent_mean.T #shape (D, T)
-            H2=Ex @ Ex.T  # shape (D, D)
-            F2=Ex @ Y_obs.T  # shape (D, N)
-
-            #Vmap over N columns of F2. Each column corresponds to f= X @ y_i ∈ ℝ^D
-            vmap_solver2 = jax.vmap(NNLS, in_axes=(None, 1)) 
-            C= vmap_solver2(H2, F2) #shape (N, D)
-            #---------Update R----------------------------
-            # R = (1/T) * sum_{t=1}^T [ y_t y_t^T - C E[x_t] y_t^T - y_t E[x_t]^T C^T + C E[x_t x_t^T] C^T ]
-            #   = (1/T) * sum_{t=1}^T [ Y_obs @ Y_obs.T - C @ Ex @ Y_obs.T - Y_obs @ Ex.T @ C.T + C @ stats.latent_second_moment @ C.T ]
-
-            R= (1 / T) * jnp.sum(Y_obs @ Y_obs.T - C @ Ex @ Y_obs.T - Y_obs @ Ex.T @ C.T + C @ stats.latent_second_moment @ C.T, axis=0) #shape (N, N)
-            
-            """
-            # Alternatively, estimate R as diagonal matrix with average residual variance per neuron
-            Y_pred = C @ Ex  # shape (N, T)
-            resid = Y_obs - Y_pred  # shape (N, T)
-            R_diag = jnp.mean(resid ** 2, axis=1)  # shape (N,)
-            R = jnp.diag(R_diag) # shape (N, N)
-            """
-            emissions = ParamsCTDSEmissions(weights=C, cov=R)
+        # latent_mean: (T, D) ⇒ Ex: (D, T)
+        Ex = stats.latent_mean.T
+        X  = Ex[:, :-1]     # (D, T-1)   past
+        Y = Ex[:,  1:]     # (D, T-1)   future
+        X_T=stats.latent_mean[:-1]  # (T-1, D)
         
-            #---------Update initial state-----------------
-            # Initial state mean is the first latent mean
-            initial_mean = stats.latent_mean[0]  # shape (D,)
-            # Initial state covariance is the first latent covariance
-            initial_cov = stats.latent_second_moment[0]  # shape (D,)
+        #H1=jax.lax.dot_general(X, X_T, dimension_numbers=(((1,), (0,)),  ((), ()))) # (D, D) Gram matrix of past states
+        #F1=jax.lax.dot_general(Y, X_T, dimension_numbers=(((1,), (0,)), ((), ())))  # (D, D) cross-covariance
+        H1=X @ X_T + 1e-3 * jnp.eye(X.shape[0]) # (D, D) Gram matrix of past states
+        F1=Y @ X_T  # (D, D) cross-covariance
+        
+        #check that H1 is well conditioned
+        #assert check_qp_condition(H1), "H1 is not well conditioned. Consider regularizing the model or checking the data."
 
-            initial = ParamsCTDSInitial(mean=initial_mean, cov=initial_cov)
+        masks = jnp.logical_not(jnp.eye(H1.shape[0], dtype=jnp.bool_))#(D,D) array where all entries are true except diagonals
+        cell_type_mask = jnp.where(params.dynamics.dynamics_mask==-1, False, True) # shape (D,) 
 
-            return ParamsCTDS(initial, dynamics, emissions, constraints=params.constraints, observations=params.observations), None
+        vmap_solver1 = jax.vmap(solve_constrained_QP, in_axes=(None, 1,1,0))
 
-        updated_params, m_step_state = _single_m_step( params, stats)
+        A= vmap_solver1(H1, F1, masks, cell_type_mask)  # shape (D, D)
+        delta_A =jnp.concatenate([m_step_state.delta_A, jnp.array([jnp.linalg.norm(A - params.dynamics.weights)] )])
 
-        return updated_params, m_step_state  # return same state (can also update it later)
+        #---------Update Q------------------------
+        # Q = (1/(T-1)) * sum_{t=2}^T [E[x_t x_t^T] - A E[x_{t-1} x_t^T]^T - E[x_t x_{t-1}^T] A^T + A E[x_{t-1} x_{t-1}^T] A^T]
+        #   =(1/(T-1)) * sum_{t>=2}^T [S11 - A @ S10.T - S10 @ A.T + A @ S00 @ A.T]
+        S11 = jnp.sum(stats.latent_second_moment[1:], axis=0)  #sums T-1 matrices returns (D, D) matrix
+        S10 = jnp.sum(stats.cross_time_moment, axis=0)  #sums T-1 matrices returns  shape (D, D) 
+        S00 = jnp.sum(stats.latent_second_moment[:-1], axis=0)  # shape (D, D) 
 
+        # Optimizing Gemm calls by reusing intermidiaries
+        AS00   = A @ S00
+        AS00AT = AS00 @ A.T
+        Q = (S11 - A @ S10.T - S10 @ A.T + AS00AT) / (T - 1.0)      # (D, D) 
+        delta_Q = jnp.concatenate([m_step_state.delta_Q, jnp.array([jnp.linalg.norm(Q - params.dynamics.cov)])])
+
+        dynamics = ParamsCTDSDynamics(weights=A, cov=Q, dynamics_mask=params.dynamics.dynamics_mask)
+        
+        #---------Update C---------------------------
+        Y_obs=params.observations # shape (N, T)
+
+        # H2 = Ex @ Ex.T, F2 = Ex @ Y_obs.T   (do as contractions)
+        H2 = jnp.einsum('dt,et->de', Ex, Ex) + 1e-3 * jnp.eye(X.shape[0])  # (D, D)
+        F2 = jnp.einsum('dt,nt->dn', Ex, Y_obs)  # (D, N)
+        Y_obs=params.observations # shape (N, T)
+        #assert check_qp_condition(H2), "H2 is not well conditioned. Consider regularizing the model or checking the data."
+
+
+        #Vmap over N columns of F2. Each column corresponds to f= X @ y_i ∈ ℝ^D
+        vmap_solver2 = jax.vmap(NNLS, in_axes=(None, 1)) 
+        C= vmap_solver2(H2, F2) #shape (N, D)
+        delta_C = jnp.concatenate([m_step_state.delta_C, jnp.array([jnp.linalg.norm(C - params.emissions.weights)])])
+
+        #---------Update R----------------------------
+        """
+        # R = (1/T) * sum_{t=1}^T [ y_t y_t^T - C E[x_t] y_t^T - y_t E[x_t]^T C^T + C E[x_t x_t^T] C^T ]
+        # Efficient reuse + batched quadratic form over time:
+        CEx  = C @ Ex                                                 # (N, T)
+        CExY = CEx @ Y_obs.T                                          # (N, N)
+        YY   = Y_obs @ Y_obs.T                                        # (N, N)
+        # quad = sum_t C E[x_t x_t^T] C^T
+        quad = jnp.einsum('nd,tdk,nk->nn', C, stats.latent_second_moment, C)  # (N, N)
+
+        R = (YY - CExY - CExY.T + quad) / T                           # (N, N)
+        emissions = ParamsCTDSEmissions(weights=C, cov=R)
+        # R= (1 / T) * jnp.sum(Y_obs @ Y_obs.T - C @ Ex @ Y_obs.T - Y_obs @ Ex.T @ C.T + C @ stats.latent_second_moment @ C.T, axis=0) #shape (N, N)
+
+        """
+        # Alternatively, estimate R as diagonal matrix with average residual variance per neuron
+        Y_pred = C @ Ex  # shape (N, T)
+        resid = Y_obs - Y_pred  # shape (N, T)
+        R_diag = jnp.mean(resid ** 2, axis=1)  # shape (N,)
+        R = jnp.diag(R_diag) # shape (N, N)
+        delta_R = jnp.concatenate([m_step_state.delta_R, jnp.array([jnp.linalg.norm(R - params.emissions.cov)])])
+
+        emissions = ParamsCTDSEmissions(weights=C, cov=R)
+
+        #---------Update initial state-----------------
+        # Initial state mean is the first latent mean
+        initial_mean = stats.latent_mean[0]  # shape (D,)
+        # Initial state covariance is the first latent covariance
+        initial_cov = stats.latent_second_moment[0]  # shape (D,)
+
+        initial = ParamsCTDSInitial(mean=initial_mean, cov=initial_cov)
+        iter=m_step_state.iteration + 1
+        return ParamsCTDS(initial, dynamics, emissions, constraints=params.constraints, observations=params.observations),  M_Step_State(iter, delta_A, delta_C, delta_Q, delta_R)
+
+    
     def fit_em(self, 
                params: ParamsCTDS,
                batch_emissions: Union[Real[Array, "num_timesteps emission_dim"],
                                 Real[Array, "num_batches num_timesteps emission_dim"]],
                batch_inputs: Optional[jnp.ndarray] = None,
-               num_iters: int = 50,
+               num_iters: int = 100,
                verbose: bool = True) -> Tuple[ParamsCTDS, jnp.ndarray]:
 
         #@jax.jit
@@ -397,22 +404,38 @@ class CTDS(SSM):
             """Perform one EM step."""
             vmap_solver=jax.vmap(DynamaxLGSSMBackend.e_step, in_axes=(None, 0, 0))  # Vectorize over batch dimension
             batch_stats, lls = vmap_solver(params,batch_emissions, batch_inputs)
-            print("batch stats type", type(batch_stats))
-            print("batch stats shape", batch_stats.shape)
             lp = self.log_prior(params) + lls.sum()
             params, m_step_state = self.m_step(params, None, batch_stats, m_step_state)
 
             return params, m_step_state, lp
 
-        log_probs = []
+        log_probs = [0.01]
         m_step_state = self.initialize_m_step_state(params, None)
         pbar = progress_bar(range(num_iters)) if verbose else range(num_iters)
-        for _ in pbar:
+        for i in pbar:
             params, m_step_state, marginal_logprob = em_step(params, m_step_state)
+            print(f"Iteration {i}: log-likelihood = {marginal_logprob}")
+            convergence_criteria = jnp.abs(marginal_logprob - log_probs[-1]) / jnp.abs(log_probs[-1])
             log_probs.append(marginal_logprob)
+            if convergence_criteria < 1e-4:
+                print(f"Converged at iteration {i}")
+                break
+
         return params, jnp.array(log_probs)
 
-    def sample(self, params: ParamsCTDS, key: jax.random.PRNGKey, num_timesteps: int, inputs: Optional[jnp.ndarray] = None):
+    def sample(self, params: ParamsCTDS, key: jax.random.PRNGKey, num_timesteps: int, inputs: Optional[jnp.ndarray] = None) -> Tuple[Float[Array, "num_timesteps state_dim"],Float[Array, "num_timesteps emission_dim"]]:
+        """
+        Generates samples from the model using the provided parameters and random key.
+        Args:
+            params (ParamsCTDS): Model parameters for sampling.
+            key (jax.random.PRNGKey): Random key for stochastic operations.
+            num_timesteps (int): Number of timesteps to sample.
+            inputs (Optional[jnp.ndarray], optional): Optional input data for conditional sampling. Defaults to None.
+        Returns:
+            Tuple[latent_states, emissions] where:
+                - latent_states: (T, D) The sampled latent states.
+                - emissions: (T, N) The sampled emissions.
+        """
         return super().sample(params, key, num_timesteps, inputs)
     
     def log_prob(self, params, states, emissions, inputs = None):
@@ -457,6 +480,15 @@ class NonlinearCTDS(BaseCTDS):
                  params: Optional[ParamsCTDS] = None,
                  inference_engine: Optional[Any] = None):
         super().__init__(params=params, inference_engine=inference_engine)
+
+
+
+
+
+
+
+
+
 
 
 

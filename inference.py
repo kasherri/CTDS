@@ -114,8 +114,6 @@ class DynamaxLGSSMBackend:
         """
         Compute expected sufficient statistics and marginal log likelihood using the smoother.
         """
-        print("emissions shape", emissions.shape)
-        print("lggsm emission shape", params.to_lgssm().emissions.weights.shape)
         posterior = lgssm_smoother(params.to_lgssm(), emissions, inputs)
         stats = compute_sufficient_statistics(posterior)
         return stats,  stats.loglik

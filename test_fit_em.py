@@ -14,9 +14,9 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
-from models import CTDS
+#from models import CTDS
 from params import ParamsCTDS, ParamsCTDSConstraints
-from utlis import generate_synthetic_cell_type_data
+from simulation_utilis import generate_CTDS_Params, generate_synthetic_data
 
 # Configure JAX for testing
 jax.config.update("jax_enable_x64", True)
@@ -29,28 +29,20 @@ class TestFitEM:
    
     @pytest.fixture
     def setup_small_ctds(self):
-        observations, constraints = generate_synthetic_cell_type_data(
-            N=15, T=100, D=6, K=2,
-            excitatory_fraction=0.6,
-            noise_level=0.1,
-            seed=42
-        )
-        ctds = CTDS(
-            emission_dim=observations.shape[1],
-            cell_types=constraints.cell_types,
-            cell_sign=constraints.cell_sign,
-            cell_type_dimensions=constraints.cell_type_dimensions,
-            cell_type_mask=constraints.cell_type_mask,
-            state_dim=6
-        )
-        return ctds, observations
-
+        states, observations,ctds = generate_synthetic_data(num_samples=1,
+                                                             num_timesteps=1000,
+                                                             state_dim=6,
+                                                             emission_dim=20,
+                                                             cell_types=2
+                                                             )
+        return  states, observations, ctds
+    
     def test_fit_em_basic_functionality(self, setup_small_ctds):
         """Test basic EM fitting functionality."""
-        ctds, observations = setup_small_ctds
+        states, observations, ctds = setup_small_ctds
         print(observations.shape)
         # Initialize parameters
-        params_init = ctds.initialize(observations)
+        params_init = ctds.initialize(observations.T) #shape should be (N, T)
         
         # Add batch dimension
         batch_observations = observations[None, :, :]
@@ -73,13 +65,13 @@ class TestFitEM:
         assert hasattr(params_fitted, 'emissions')
         assert hasattr(params_fitted, 'constraints')
     
-    def test_parameter_shapes_consistency(self, setup_small_ctds, synthetic_data):
+    def test_parameter_shapes_consistency(self, setup_small_ctds):
         """Test that parameter shapes remain consistent after EM."""
-        ctds, N, D, K = setup_small_ctds
-        observations, _ = synthetic_data
+        states, observations, ctds = setup_small_ctds
+        T, N=observations.shape
         
-        params_init = ctds.initialize(observations[:N, :])
-        batch_observations = observations[:N, :][None, :, :]
+        params_init = ctds.initialize(observations.T)
+        batch_observations = observations[None, :, :]
         
         # Store initial shapes
         initial_shapes = {
@@ -95,7 +87,7 @@ class TestFitEM:
         params_fitted, _ = ctds.fit_em(
             params_init,
             batch_observations,
-            num_iters=3,
+            num_iters=5,
             verbose=False
         )
         
@@ -107,13 +99,13 @@ class TestFitEM:
         assert params_fitted.emissions.weights.shape == initial_shapes['emissions_weights']
         assert params_fitted.emissions.cov.shape == initial_shapes['emissions_cov']
     
-    def test_log_likelihood_improvement(self, setup_small_ctds, synthetic_data):
+    def test_log_likelihood_improvement(self, setup_small_ctds):
         """Test that log-likelihood generally improves during EM."""
-        ctds, N, D, K = setup_small_ctds
-        observations, _ = synthetic_data
+        states, observations, ctds = setup_small_ctds
+        T, N=observations.shape
         
-        params_init = ctds.initialize(observations[:N, :])
-        batch_observations = observations[:N, :][None, :, :]
+        params_init = ctds.initialize(observations.T)
+        batch_observations = observations[None, :, :]
         
         # Run EM for more iterations
         params_fitted, log_probs = ctds.fit_em(
@@ -127,6 +119,7 @@ class TestFitEM:
         initial_ll = log_probs[0]
         final_ll = log_probs[-1]
         
+        print(log_probs)
         # EM should increase likelihood (or at least not decrease significantly)
         assert final_ll >= initial_ll - 1e-6, f"LL decreased: {initial_ll} -> {final_ll}"
         
@@ -138,7 +131,11 @@ class TestFitEM:
     
     def test_batch_processing(self, setup_small_ctds):
         """Test that EM works with multiple sequences in batch."""
-        ctds, N, D, K = setup_small_ctds
+        states, observations, ctds = setup_small_ctds
+        T, N=observations.shape
+        
+        params_init = ctds.initialize(observations.T)
+        batch_observations = observations[None, :, :]
         
         # Generate multiple sequences
         batch_size = 3
@@ -176,7 +173,7 @@ class TestFitEM:
     
     def test_single_vs_batch_consistency(self, setup_small_ctds, synthetic_data):
         """Test that single sequence gives same result as batch of size 1."""
-        ctds, N, D, K = setup_small_ctds
+        states, observations, ctds = setup_small_ctds
         observations, _ = synthetic_data
         
         params_init = ctds.initialize(observations[:N, :])
@@ -204,10 +201,10 @@ class TestFitEM:
     
     def test_parameter_convergence(self, setup_small_ctds, synthetic_data):
         """Test that parameters converge (stop changing significantly)."""
-        ctds, N, D, K = setup_small_ctds
+        states, observations, ctds = setup_small_ctds
         observations, _ = synthetic_data
         
-        params_init = ctds.initialize(observations[:N, :])
+        params_init = ctds.initialize(observations.T)
         batch_observations = observations[:N, :][None, :, :]
         
         # Run EM for many iterations

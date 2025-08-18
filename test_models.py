@@ -17,6 +17,7 @@ from functools import partial
 # Import the classes we're testing
 from models import CTDS
 from params import ParamsCTDS, ParamsCTDSInitial, ParamsCTDSDynamics, ParamsCTDSEmissions, ParamsCTDSConstraints
+from utlis import generate_synthetic_cell_type_data
 
 
 class TestCTDSInitialization:
@@ -415,11 +416,20 @@ class TestFullInitialization(TestCTDSInitialization):
     
     def test_initialization_numerical_stability(self, setup_simple_2_cell_type):
         """Test that initialization produces numerically stable results."""
-        setup = setup_simple_2_cell_type
-        ctds = setup['ctds']
-        Y = setup['Y']
-        
-        params = ctds.initialize(Y)
+        #setup = setup_simple_2_cell_type
+        #ctds = setup['ctds']
+        #Y = setup['Y']
+        observations, constraints = generate_synthetic_cell_type_data(10, 100, 8)
+        ctds=CTDS(
+            emission_dim=observations.shape[1],
+            cell_types=constraints.cell_types,
+            cell_sign=constraints.cell_sign,
+            cell_type_dimensions=constraints.cell_type_dimensions,
+            cell_type_mask=constraints.cell_type_mask,
+            state_dim=8
+        )
+
+        params = ctds.initialize(observations.T)
         
         # Check for NaN or Inf values
         assert jnp.all(jnp.isfinite(params.initial.mean)), "Initial mean should be finite"
@@ -501,7 +511,7 @@ class TestMStep(TestCTDSInitialization):
         
         # Create mock sufficient statistics
         stats = self.create_mock_sufficient_stats(setup)
-        
+
         # Run single M-step
         updated_params = ctds.m_step(params, None, stats, None)[0]
         
@@ -526,8 +536,9 @@ class TestMStep(TestCTDSInitialization):
         """Test that _single_m_step preserves constraints."""
         setup = setup_simple_2_cell_type
         ctds = setup['ctds']
+        Y = setup['Y']
         
-        params = ctds.initialize()
+        params = ctds.initialize(Y)
         stats = self.create_mock_sufficient_stats(setup)
         
         updated_params = ctds.m_step(params, None, stats, None)[0]
@@ -559,7 +570,7 @@ class TestMStep(TestCTDSInitialization):
         ctds = setup['ctds']
         Y=setup['Y']
 
-        params = ctds.initialize()
+        params = ctds.initialize(Y)
         stats = self.create_mock_sufficient_stats(setup)
 
         updated_params = ctds.m_step(params, None, stats, None)[0]
@@ -576,8 +587,9 @@ class TestMStep(TestCTDSInitialization):
         """Test m_step with multiple sequences (batched)."""
         setup = setup_simple_2_cell_type
         ctds = setup['ctds']
+        Y = setup['Y']
         
-        params = ctds.initialize()
+        params = ctds.initialize(Y)
         batch_size = 5
         batch_stats = self.create_mock_sufficient_stats(setup, batch_size=batch_size)
         
@@ -597,8 +609,9 @@ class TestMStep(TestCTDSInitialization):
         """Test that m_step correctly averages statistics across batch."""
         setup = setup_simple_2_cell_type
         ctds = setup['ctds']
+        Y = setup['Y']
         
-        params = ctds.initialize()
+        params = ctds.initialize(Y)
         
         # Create batch with identical sequences
         single_stats = self.create_mock_sufficient_stats(setup, batch_size=1)
@@ -629,8 +642,9 @@ class TestMStep(TestCTDSInitialization):
         """Test m_step with different batch sizes."""
         setup = setup_simple_2_cell_type
         ctds = setup['ctds']
+        Y = setup['Y']
         
-        params = ctds.initialize()
+        params = ctds.initialize(Y)
         
         for batch_size in [1, 3, 7]:
             batch_stats = self.create_mock_sufficient_stats(setup, batch_size=batch_size)
@@ -645,8 +659,9 @@ class TestMStep(TestCTDSInitialization):
         """Test that m_step preserves the constraints object."""
         setup = setup_simple_2_cell_type
         ctds = setup['ctds']
-        
-        params = ctds.initialize()
+        Y = setup['Y']
+
+        params = ctds.initialize(Y)
         batch_stats = self.create_mock_sufficient_stats(setup)
         
         updated_params, _ = ctds.m_step(params, None, batch_stats, None)
@@ -665,8 +680,9 @@ class TestMStep(TestCTDSInitialization):
         ctds = setup['ctds']
         N = setup['N']
         state_dim = setup['state_dim']
+        Y = setup['Y']
         
-        params = ctds.initialize()
+        params = ctds.initialize(Y)
         batch_stats = self.create_mock_sufficient_stats(setup)
         
         updated_params, _ = ctds.m_step(params, None, batch_stats, None)
@@ -682,8 +698,9 @@ class TestMStep(TestCTDSInitialization):
         """Test that R matrix is diagonal with positive entries."""
         setup = setup_simple_2_cell_type
         ctds = setup['ctds']
+        Y = setup['Y']
         
-        params = ctds.initialize()
+        params = ctds.initialize(Y)
         batch_stats = self.create_mock_sufficient_stats(setup)
         
         updated_params, _ = ctds.m_step(params, None, batch_stats, None)
@@ -701,8 +718,9 @@ class TestMStep(TestCTDSInitialization):
         """Test m_step with multiple cell types."""
         setup = setup_multi_cell_type
         ctds = setup['ctds']
+        Y = setup['Y']
         
-        params = ctds.initialize()
+        params = ctds.initialize(Y)
         batch_stats = self.create_mock_sufficient_stats(setup)
         
         updated_params, _ = ctds.m_step(params, None, batch_stats, None)
@@ -732,7 +750,9 @@ class TestMStep(TestCTDSInitialization):
         )
         
         ctds = custom_setup['ctds']
-        params = ctds.initialize()
+        Y = custom_setup['Y']
+
+        params = ctds.initialize(Y)
         batch_stats = self.create_mock_sufficient_stats(custom_setup)
         
         updated_params, _ = ctds.m_step(params, None, batch_stats, None)
@@ -740,8 +760,8 @@ class TestMStep(TestCTDSInitialization):
         # Check that it works with custom configuration
         assert isinstance(updated_params, ParamsCTDS)
         assert updated_params.dynamics.weights.shape == (custom_setup['state_dim'], custom_setup['state_dim'])
-        assert updated_params.emissions.weights.shape == (custom_setup['state_dim'], custom_setup['N'])
-        
+        assert updated_params.emissions.weights.shape == (custom_setup['N'], custom_setup['state_dim'])
+
         # Check that constraints are preserved
         assert jnp.array_equal(updated_params.constraints.cell_types, custom_setup['cell_types'])
         assert jnp.array_equal(updated_params.constraints.cell_type_dimensions, custom_setup['cell_type_dimensions'])
@@ -773,9 +793,9 @@ class TestMStep(TestCTDSInitialization):
         ctds2.constraints = ctds1.constraints
         
         # Run initialization on both
-        params1 = ctds1.initialize()
-        params2 = ctds2.initialize()
-        
+        params1 = ctds1.initialize(Y)
+        params2 = ctds2.initialize(Y)
+
         # Results should be identical (assuming deterministic random seeds in functions)
         # Note: This test might fail if internal functions use non-deterministic random keys
         # In that case, we should at least check that the shapes and basic properties match

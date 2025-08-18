@@ -128,7 +128,12 @@ class ParamsCTDS(NamedTuple):
         )
 
 
-
+class M_Step_State(NamedTuple):
+    iteration: int
+    delta_A: jnp.ndarray
+    delta_C: jnp.ndarray
+    delta_Q: jnp.ndarray
+    delta_R: jnp.ndarray
 class PosteriorCTDSSmoothed(NamedTuple):
     """
     RTS-smoothed posterior over latents.
