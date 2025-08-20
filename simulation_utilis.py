@@ -1,10 +1,11 @@
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Sequence, Any
 from jaxtyping import Float, Array
 from params import ParamsCTDSConstraints,ParamsCTDS,ParamsCTDSEmissions,ParamsCTDSDynamics,ParamsCTDSInitial
 from models import CTDS
+import numpy as np
 
 
 def generate_full_rank_matrix(key, T, N):
@@ -133,6 +134,10 @@ def generate_CTDS_Params(
     keysC = jr.split(keys[2], len(cell_types))
     C_blocks = []
     col_start = 0
+    emission_dims = []
+    left_padding_dims = []
+    right_padding_dims = []
+    emiss_start=0
     for i in range(len(cell_types)):
         #get the number of neurons for this cell type
         N_type = jnp.sum(jnp.where(cell_type_mask == cell_types[i], 1, 0))
@@ -143,6 +148,12 @@ def generate_CTDS_Params(
         # create padded block: [zeros_left, U, zeros_right]
         left_pad = jnp.zeros((N_type, col_start))
         right_pad = jnp.zeros((N_type, D - col_start - D_type))
+        left_padding_dims.append(left_pad.shape)
+        right_padding_dims.append(right_pad.shape)
+        
+        emission_dims.append((emiss_start, emiss_start + N_type))
+        
+        emiss_start += N_type
         C_blocks.append(jnp.concatenate([left_pad, C_type, right_pad], axis=1))
         col_start += D_type
 
@@ -161,7 +172,7 @@ def generate_CTDS_Params(
     Q=Q/(jnp.max(Q)*1000)
 
 
-    emissions=ParamsCTDSEmissions(weights=C, cov=R)
+    emissions=ParamsCTDSEmissions(weights=C, cov=R, emission_dims=jnp.array(emission_dims), left_padding_dims=jnp.array(left_padding_dims), right_padding_dims=jnp.array(right_padding_dims))
     dynamics=ParamsCTDSDynamics(weights=A, cov=Q, dynamics_mask=dynamics_mask)
     initial=ParamsCTDSInitial(mean=jnp.zeros(D), cov=jnp.eye(D) * 0.1)
     # Create constraints object
@@ -237,13 +248,15 @@ def generate_synthetic_data(
 
 
 
+"""
+
 def pearsonr_jax(x, y):
     x = x - jnp.mean(x)
     y = y - jnp.mean(y)
     return jnp.sum(x * y) / (jnp.sqrt(jnp.sum(x ** 2)) * jnp.sqrt(jnp.sum(y ** 2)))
 
 def transform_true_rec(C_true, C_rec, A_rec, Q_rec, list_of_dimensions, region_identity=None):
-    """JAX version: transform the recovered parameters to match the true parameters, as there are non-identifiabilities."""
+   #JAX version: transform the recovered parameters to match the true parameters, as there are non-identifiabilities.
     if region_identity is None:
         region_identity = jnp.zeros(C_true.shape[0])
 
@@ -295,3 +308,148 @@ def transform_true_rec(C_true, C_rec, A_rec, Q_rec, list_of_dimensions, region_i
     Q_rec = (D_inv @ Q_rec @ D_inv)
 
     return C_rec, A_rec, Q_rec
+
+
+"""
+
+
+# JAX single-region post-hoc alignment: permutation (Hungarian) + diagonal scaling
+# Preserves cell-type blocks; transforms (A, C, Q) by the induced similarity map.
+#
+# Inputs
+#   C_true:  (n_neurons, d)  jnp.ndarray
+#   C_rec:   (n_neurons, d)  jnp.ndarray
+#   A_rec:   (d, d)          jnp.ndarray
+#   Q_rec:   (d, d)          jnp.ndarray
+#   block_sizes: 1D sequence of ints summing to d, e.g. [d_E, d_PV, d_SOM]
+#   ridge: small float for ridge in per-axis scaling
+#   use_abs_corr: match by |corr| so signs can be absorbed by scaling
+#
+# Returns
+#   A_aln, C_aln, Q_aln, info
+#
+# Notes
+#   - The Hungarian step uses scipy.optimize.linear_sum_assignment (host side, non-JIT).
+#   - Everything else is JAX ndarrays. You can wrap the function outside JIT regions.
+#   - If you cannot use SciPy, swap `hungarian_perm_block` with a greedy matcher.
+
+
+
+try:
+    from scipy.optimize import linear_sum_assignment
+    _HAS_SCIPY = True
+except Exception:
+    _HAS_SCIPY = False
+
+def _corr_matrix(U: jnp.ndarray, V: jnp.ndarray, eps: float = 1e-12) -> jnp.ndarray:
+    """
+    Column-wise correlation matrix between U and V.
+    U: (n, p), V: (n, q)  ->  Corr: (p, q)
+    """
+    Uc = U - jnp.mean(U, axis=0, keepdims=True)
+    Vc = V - jnp.mean(V, axis=0, keepdims=True)
+    num = Uc.T @ Vc                         # (p, q)
+    den = jnp.sqrt((jnp.sum(Uc**2, axis=0) + eps)[:, None] *
+                   (jnp.sum(Vc**2, axis=0) + eps)[None, :])
+    return num / den
+
+def hungarian_perm_block(C_true_blk: jnp.ndarray, C_rec_blk: jnp.ndarray, use_abs_corr: bool = True) -> np.ndarray:
+    """
+    Build a permutation (as index array) mapping recovered columns to true columns for one block.
+    Returns perm indices `perm` such that C_rec_blk[:, perm] aligns to C_true_blk column order.
+    """
+    p = C_true_blk.shape[1]
+    assert C_rec_blk.shape[1] == p, "Block sizes for C_true and C_rec must match."
+    # host numpy for Hungarian
+    Corr = _corr_matrix(C_true_blk, C_rec_blk)
+    Corr = jnp.abs(Corr) if use_abs_corr else Corr
+    Corr_np = np.asarray(Corr)
+    if not _HAS_SCIPY:
+        # Fallback: greedy argmax (not globally optimal). Prefer SciPy whenever possible.
+        used = set()
+        perm = np.empty(p, dtype=int)
+        for i in range(p):
+            j = int(np.argmax(Corr_np[i]))
+            while j in used:
+                Corr_row = Corr_np[i].copy()
+                Corr_row[list(used)] = -np.inf
+                j = int(np.argmax(Corr_row))
+            perm[i] = j
+            used.add(j)
+        return perm
+    # Hungarian on cost = -Corr (maximize Corr)
+    row_idx, col_idx = linear_sum_assignment(-Corr_np)
+    # row_idx is [0..p-1] in order, so col_idx gives the assigned recovered column per true column
+    perm = np.empty(p, dtype=int)
+    perm[row_idx] = col_idx
+    return perm
+
+def align_single_region_ctds(
+    C_true: jnp.ndarray,
+    C_rec: jnp.ndarray,
+    A_rec: jnp.ndarray,
+    Q_rec: jnp.ndarray,
+    block_sizes: Sequence[int],
+    ridge: float = 1e-6,
+    use_abs_corr: bool = True,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, Dict[str, Any]]:
+    """
+    Single-region alignment that preserves cell-type blocks:
+      1) blockwise permutation via Hungarian assignment on column correlations
+      2) per-axis diagonal scaling via ridge-stabilized OLS
+      3) apply the induced similarity transform to (A, Q)
+    """
+    n, d = C_true.shape
+    assert C_rec.shape == (n, d)
+    assert A_rec.shape == (d, d)
+    assert Q_rec.shape == (d, d)
+    assert sum(block_sizes) == d
+
+    # 1) Build global permutation across blocks
+    start = 0
+    perm_global = np.empty(0, dtype=int)
+    block_corrs = []
+    for bsz in block_sizes:
+        sl = slice(start, start + bsz)
+        perm_blk = hungarian_perm_block(C_true[:, sl], C_rec[:, sl], use_abs_corr=use_abs_corr)
+        # shift to global column indices
+        perm_global = np.concatenate([perm_global, perm_blk + start])
+        # collect aligned correlations for diagnostics
+        Corr_blk = _corr_matrix(C_true[:, sl], C_rec[:, sl][:, perm_blk])
+        block_corrs.append(np.asarray(jnp.diag(Corr_blk)))  # correlation of matched pairs
+        start += bsz
+    # permutation matrix application via indexing
+    C_perm = C_rec[:, perm_global]
+    A_perm = A_rec[perm_global][:, perm_global]
+    Q_perm = Q_rec[perm_global][:, perm_global]
+
+    # 2) Per-axis ridge OLS scaling: s_j = <u, v> / (||u||^2 + ridge)
+    u = C_perm  # recovered columns after permutation
+    v = C_true
+    denom = jnp.sum(u * u, axis=0) + ridge
+    numer = jnp.sum(u * v, axis=0)
+    s = numer / denom
+    D = jnp.diag(s)
+    Dinv = jnp.diag(1.0 / (s + 1e-12))
+
+    # 3) Apply similarity transform for scaling
+    C_aln = u @ D
+    A_aln = Dinv @ A_perm @ D
+    Q_aln = Dinv @ Q_perm @ Dinv
+    Q_aln = 0.5 * (Q_aln + Q_aln.T)  # symmetrize
+
+    # Diagnostics
+    #   per-block matched correlations, columnwise after alignment, and simple condition numbers
+    def condnum(mat: jnp.ndarray, eps: float = 1e-12) -> float:
+        svals = jnp.linalg.svd(mat, compute_uv=False)
+        return float((svals.max() / jnp.maximum(svals.min(), eps)))
+
+    info = {
+        "perm_indices": perm_global,                          # numpy array, length d
+        "scale_factors": np.asarray(s),                       # per latent
+        "matched_corrs_by_block": block_corrs,                # list of np arrays
+        "mean_abs_matched_corr": float(jnp.mean(jnp.abs(jnp.concatenate([jnp.array(b) for b in block_corrs])))),
+        "cond_C_rec_perm": condnum(C_perm),
+        "cond_D": float(np.max(np.abs(s)) / max(np.min(np.abs(s)), 1e-12)),
+    }
+    return A_aln, C_aln, Q_aln, info

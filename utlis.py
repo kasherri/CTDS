@@ -5,7 +5,8 @@ from typing import Optional, List, Tuple
 from jaxtyping import Float, Array
 from jaxopt import BoxCDQP
 from params import SufficientStats, ParamsCTDSConstraints
-
+import optax
+from functools import partial
 _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False) 
 
 #might change args to matvec functions
@@ -96,13 +97,73 @@ def solve_constrained_QP(Q, c, mask, isExcitatory, key=jax.random.PRNGKey(0)):
 
 
 #TODO: change to implementing with optax
-#@jax.jit
-def NNLS(Q, c):
+@jax.jit
+def jaxOpt_NNLS(Q, c):
     lower = jnp.zeros(c.shape[0])  # Non-negative constraint
     upper = jnp.inf * jnp.ones(c.shape[0])  # No upper bound
     init_x = jax.random.normal(jax.random.PRNGKey(42), (c.shape[0],))
     sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
     return sol.params
+
+@jax.jit
+def Optax_NNLS(A, b, iters: Optional[int] = 1000):
+    vec=optax.nnls(A, b, iters=iters)
+    return vec
+
+
+
+def blockwise_NNLS(Y, X, left_paddings, right_paddings, emission_dims, cell_type_dims):
+    C_blocks=[]
+    for i in range(left_paddings.shape[0]):
+        emission_dim=emission_dims[i]
+        left_padding=left_paddings[i]
+        right_padding=right_paddings[i]
+        cell_type_dim=cell_type_dims[i]
+        Y_type=Y[ :, emission_dim[0] : emission_dim[1]] #(T, N_type)
+        X_type=X[:, left_padding[1] :left_padding[1]+ cell_type_dim ] #(T, D_type)
+        C_T=Optax_NNLS(X_type, Y_type)
+        C_blocks.append(jnp.concatenate([jnp.zeros(left_padding), jnp.transpose(C_T), jnp.zeros(right_padding)], axis=1))
+    
+    C = jnp.concatenate(C_blocks, axis=0)
+
+    return C
+
+        
+
+
+
+
+
+
+
+
+"""
+#trying to use lax.scan for blockwise NNLS
+def blockwise_NNLS(carry, index):
+    Y, X, left_paddings, right_paddings, emission_dims, cell_type_dims =carry
+    emission_dim=emission_dims[index]
+    left_padding=left_paddings[index]
+    right_padding=right_paddings[index]
+    cell_type_dim=cell_type_dims[index]
+    jax.lax.dynamic_slice
+    Y_type=Y[ :, emission_dim[0] : emission_dim[1]] #(T, N_type)
+    X_type=X[:, left_padding[1] :left_padding[1]+ cell_type_dim ] #(T, D_type)
+    C_T=Optax_NNLS(X_type, Y_type)
+    C=jnp.transpose(C_T)
+    return carry, C
+#partial(jax.jit, static_argnames=("left_padding", "right_padding", "emission_dim", "cell_type_dim"))
+def blockwise_NNLS(Y, X, left_padding, right_padding, emission_dim, cell_type_dim ):
+
+    Y_type=Y[ :, emission_dim[0] : emission_dim[1]] #(T, N_type)
+    X_type=X[:, left_padding[1] :left_padding[1]+ cell_type_dim ] #(T, D_type)
+    C_T=Optax_NNLS(X_type, Y_type)
+    C=jnp.transpose(C_T)
+    C_block = jnp.concatenate([jnp.zeros(left_padding), C, jnp.zeros(right_padding)], axis=1)
+
+"""
+
+
+
 
 
 """
@@ -314,7 +375,7 @@ def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
         #masks all True since doing non-negative least squares
         #masks = jnp.full((J.shape[0],Q1.shape[0]), True, dtype=bool) #shape (N_E, D_E)
         
-        vmap_solver = jax.vmap(NNLS, in_axes=(None, 1)) #vmap over each column of C1.T which is shape (D_E, 1)
+        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1)) #vmap over each column of C1.T which is shape (D_E, 1)
         U_new=vmap_solver(Q1, C1.T)  # shape (N_E, D_E)
 
         #--------------V Step---------------
@@ -324,7 +385,7 @@ def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
         C2 = -2.0 * ( J.T @ U_new)  # shape  (N, D_E)
        
         #masks = jnp.full((J.shape[1], Q2.shape[0]), True, dtype=bool) # shape (N, D_E)
-        vmap_solver = jax.vmap(NNLS, in_axes=(None, 1)) #Vmap over each column of C2.T which is shape (D_E, 1)
+        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1)) #Vmap over each column of C2.T which is shape (D_E, 1)
         V_new = vmap_solver(Q2, C2.T)  # shape (N, D_E)
 
         return (i + 1, U_new, V_new)
@@ -461,3 +522,6 @@ def is_positive_semidefinite(Q: jnp.ndarray) -> bool:
     """
     eigs = jnp.linalg.eigvalsh(Q)
     return jnp.all(eigs >= -1e-10)
+
+#def update_emissions_blockwise(C_blocks, Y_obs, X):
+

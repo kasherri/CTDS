@@ -57,8 +57,9 @@ class ParamsCTDSEmissions(NamedTuple):
         Float[Array, "N"],
         ParameterProperties
     ]
-
-
+    emission_dims: Optional[Array]  # (K, 1) where K is number of cell types, each row is (start, end) for emission dimensions
+    left_padding_dims: Optional[Array]   # (K, 2) where K is number of cell types, each row is (start, end) for left padding
+    right_padding_dims: Optional[Array]  # (K, 2) where K is number of cell types, each row is (start, end) for right padding
 
 
 class ParamsCTDSConstraints(NamedTuple):
@@ -165,8 +166,8 @@ class SufficientStats(NamedTuple):
         loglik: scalar - marginal log-likelihood
         T: int - number of time steps
     """
-    latent_mean: jnp.ndarray             # shape (T, K)        E[x_t]
-    latent_second_moment: jnp.ndarray           # shape (T, K, K)     E[x_t x_t^T]
-    cross_time_moment: jnp.ndarray      # shape (T-1, K, K)  - E[x_t x_{t-1}^T]
-    loglik: float               # scalar             - marginal log-likelihood
-    T: int                      # number of time steps
+    latent_mean: Float[Array, "T state_dim"]           # shape (T, K)        E[x_t]
+    latent_second_moment: Float[Array, "T state_dim state_dim"]           # shape (T, K, K)     E[x_t x_t^T]
+    cross_time_moment: Float[Array, "T-1 state_dim state_dim"]      # shape (T-1, K, K)  - E[x_t x_{t-1}^T]
+    loglik: float              
+    T: int                      
