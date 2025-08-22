@@ -54,8 +54,8 @@ def solve_dale_QP(Q, c, mask):
     return sol.params
 
 
-#@jax.jit
-def solve_constrained_QP(Q, c, mask, isExcitatory, key=jax.random.PRNGKey(0)):
+@jax.jit
+def solve_constrained_QP(Q, c, mask, isExcitatory, init_x, key=jax.random.PRNGKey(0)):
     """Solve a constrained quadratic program with excitatory/inhibitory constraints.
     Args:
         Q (jnp.ndarray): Positive semi-definite matrix of shape (D, D).
@@ -67,13 +67,13 @@ def solve_constrained_QP(Q, c, mask, isExcitatory, key=jax.random.PRNGKey(0)):
         key (jax.random.PRNGKey): Random key for initialization."""
     def true_fn(args):
         """
-        all entries are nonnegative except diagonals. True=Non-neggative, False=unconstrained diagonal
+        all entries are nonnegative except diagonals. True=Non-negative, False=unconstrained diagonal
         """
-        Q, c, mask, key = args
+        Q, c, mask, key, init_x = args
         D = Q.shape[0]
         lower = jnp.where(mask, 0, -jnp.inf)
         upper = jnp.where(mask, jnp.inf, jnp.inf)
-        init_x = jax.random.normal(key, (D,))
+        #init_x = jax.random.normal(key, (D,))
         sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
         return sol.params
 
@@ -81,27 +81,27 @@ def solve_constrained_QP(Q, c, mask, isExcitatory, key=jax.random.PRNGKey(0)):
         """
         all entries are nonpositive except diagonals. True=Non-positive, False=unconstrained diagonal
         """
-        Q, c, mask, key = args
+        Q, c, mask, key, init_x = args
         D = Q.shape[0]
         lower = jnp.where(mask, -jnp.inf, -jnp.inf)
         upper = jnp.where(mask, 0, jnp.inf)
-        init_x = jax.random.normal(key, (D,))
+        #init_x = jax.random.normal(key, (D,))
         sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
         return sol.params
 
     return jax.lax.cond(isExcitatory, 
-                    (Q, c, mask, key), true_fn, 
-                    (Q, c, mask, key), false_fn)
+                    (Q, c, mask, key, init_x), true_fn, 
+                    (Q, c, mask, key, init_x), false_fn)
 
 
 
 
 #TODO: change to implementing with optax
 @jax.jit
-def jaxOpt_NNLS(Q, c):
+def jaxOpt_NNLS(Q, c, init_x):
     lower = jnp.zeros(c.shape[0])  # Non-negative constraint
     upper = jnp.inf * jnp.ones(c.shape[0])  # No upper bound
-    init_x = jax.random.normal(jax.random.PRNGKey(42), (c.shape[0],))
+    #init_x = jax.random.uniform(jax.random.PRNGKey(42), (c.shape[0],), minval=0.0, maxval=1.0)
     sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
     return sol.params
 
@@ -112,7 +112,7 @@ def Optax_NNLS(A, b, iters: Optional[int] = 1000):
 
 
 
-def blockwise_NNLS(Y, X, left_paddings, right_paddings, emission_dims, cell_type_dims):
+def blockwise_NNLS(Y, X, left_paddings, right_paddings, emission_dims, cell_type_dims, C_prev):
     C_blocks=[]
     for i in range(left_paddings.shape[0]):
         emission_dim=emission_dims[i]
@@ -121,6 +121,15 @@ def blockwise_NNLS(Y, X, left_paddings, right_paddings, emission_dims, cell_type
         cell_type_dim=cell_type_dims[i]
         Y_type=Y[ :, emission_dim[0] : emission_dim[1]] #(T, N_type)
         X_type=X[:, left_padding[1] :left_padding[1]+ cell_type_dim ] #(T, D_type)
+        #C_prev_block = C_prev[emission_dim[0] : emission_dim[1], left_padding[1] : left_padding[1] + cell_type_dim]  # shape (N, D_type)
+        #Q = X_type.T @ X_type  # shape (D_type, D_type)
+        #F = X_type.T @ Y_type  # shape (D_type, N_type)
+        
+        #Vmap over N columns of F. Each column corresponds to f= X @ y_i ∈ ℝ^D
+        #vmap_solver2 = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1, 1))
+        #C = vmap_solver2(Q, F, C_prev_block.T)
+        #C_blocks.append(jnp.concatenate([jnp.zeros(left_padding), C, jnp.zeros(right_padding)], axis=1))
+
         C_T=Optax_NNLS(X_type, Y_type)
         C_blocks.append(jnp.concatenate([jnp.zeros(left_padding), jnp.transpose(C_T), jnp.zeros(right_padding)], axis=1))
     
@@ -375,18 +384,17 @@ def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
         #masks all True since doing non-negative least squares
         #masks = jnp.full((J.shape[0],Q1.shape[0]), True, dtype=bool) #shape (N_E, D_E)
         
-        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1)) #vmap over each column of C1.T which is shape (D_E, 1)
-        U_new=vmap_solver(Q1, C1.T)  # shape (N_E, D_E)
+        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1,1)) #vmap over each column of C1.T which is shape (D_E, 1)
+        U_new=vmap_solver(Q1, C1.T, jax.random.uniform(jax.random.PRNGKey(42), C1.T.shape, minval=0.0, maxval=1.0))  # shape (N_E, D_E)
 
         #--------------V Step---------------
         #  Fix U, solve for each col vⱼ ∈ {1,...,N}:
         #  min_{vⱼ ≥ 0} ||UV[:, j] - J[:, j] ||_2²
         Q2 = U_new.T @ U_new #shape (D_E, D_E)
         C2 = -2.0 * ( J.T @ U_new)  # shape  (N, D_E)
-       
-        #masks = jnp.full((J.shape[1], Q2.shape[0]), True, dtype=bool) # shape (N, D_E)
-        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1)) #Vmap over each column of C2.T which is shape (D_E, 1)
-        V_new = vmap_solver(Q2, C2.T)  # shape (N, D_E)
+       #masks = jnp.full((J.shape[1], Q2.shape[0]), True, dtype=bool) # shape (N, D_E)
+        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1,1)) #Vmap over each column of C2.T which is shape (D_E, 1)
+        V_new = vmap_solver(Q2, C2.T, jax.random.uniform(jax.random.PRNGKey(42), C2.T.shape, minval=0.0, maxval=1.0))  # shape (N, D_E)
 
         return (i + 1, U_new, V_new)
     
@@ -525,3 +533,40 @@ def is_positive_semidefinite(Q: jnp.ndarray) -> bool:
 
 #def update_emissions_blockwise(C_blocks, Y_obs, X):
 
+@jax.jit
+def linreg_to_quadratic_form(A: jnp.ndarray, b: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Convert linear regression problem ||Ax - b||² to quadratic form ½x^T P x + q^T x + r
+    
+    The linear regression objective ||Ax - b||² expands to:
+    (Ax - b)^T (Ax - b) = x^T A^T A x - 2 b^T A x + b^T b
+    
+    In standard quadratic form ½x^T P x + q^T x + r:
+    - P = 2 * A^T A  (factor of 2 because of the ½ in standard form)
+    - q = -2 * A^T b
+    - r = b^T b
+    
+    Args:
+        A: Design matrix of shape (m, n)
+        b: Target vector of shape (m,)
+        
+    Returns:
+        P: Quadratic coefficient matrix of shape (n, n)
+        q: Linear coefficient vector of shape (n,)
+        r: Constant scalar
+    """
+    # Compute A^T A for the quadratic term
+    AtA = A.T @ A
+    
+    # Compute A^T b for the linear term  
+    Atb = A.T @ b
+    
+    # Compute b^T b for the constant term
+    btb = b.T @ b
+    
+    # Convert to standard quadratic form ½x^T P x + q^T x + r
+    P = 2.0 * AtA
+    q = -2.0 * Atb  
+    r = btb
+    
+    return P, q, r

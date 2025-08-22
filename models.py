@@ -329,9 +329,9 @@ class CTDS(SSM):
         masks = jnp.logical_not(jnp.eye(H1.shape[0], dtype=jnp.bool_))#(D,D) array where all entries are true except diagonals
         cell_type_mask = jnp.where(params.dynamics.dynamics_mask==-1, False, True) # shape (D,) 
 
-        vmap_solver1 = jax.vmap(solve_constrained_QP, in_axes=(None, 1,1,0))
+        vmap_solver1 = jax.vmap(solve_constrained_QP, in_axes=(None, 0,1,0,1))
 
-        A_t= vmap_solver1(H1, F1, masks, cell_type_mask)  # shape (D, D)
+        A_t= vmap_solver1(H1, F1, masks, cell_type_mask, params.dynamics.weights)  # shape (D, D)
         A=jnp.transpose(A_t)
         delta_A =jnp.concatenate([m_step_state.delta_A, jnp.array([jnp.linalg.norm(A - params.dynamics.weights)] )])
 
@@ -353,7 +353,7 @@ class CTDS(SSM):
         #---------Update C---------------------------
         Y_obs=params.observations.T # shape (T,N)
         X=stats.latent_mean #shape(T, D)
-        C=blockwise_NNLS(Y_obs, X, params.emissions.left_padding_dims, params.emissions.right_padding_dims, params.emissions.emission_dims, params.constraints.cell_type_dimensions)
+        C=blockwise_NNLS(Y_obs, X, params.emissions.left_padding_dims, params.emissions.right_padding_dims, params.emissions.emission_dims, params.constraints.cell_type_dimensions, params.emissions.weights)  # shape (N, D)
         delta_C = jnp.concatenate([m_step_state.delta_C, jnp.array([jnp.linalg.norm(C - params.emissions.weights)])])
 
         #xs=jnp.arange(params.constraints.cell_sign.shape[0]-1, -1, -1) 
@@ -424,7 +424,7 @@ class CTDS(SSM):
         pbar = progress_bar(range(1, num_iters)) if verbose else range(num_iters)
         for i in pbar:
             params, m_step_state, marginal_logprob = em_step(params, m_step_state)
-            print(f"Iteration {i}: log-likelihood = {marginal_logprob}")
+            #print(f"Iteration {i}: log-likelihood = {marginal_logprob}")
             convergence_criteria = jnp.abs(marginal_logprob - log_probs[-1]) / jnp.abs(log_probs[-1])
             log_probs.append(marginal_logprob)
             if convergence_criteria < 1e-4:
