@@ -1,17 +1,20 @@
 import jax
 import jax.numpy as jnp
-#from jaxopt import BoxOSQP
+from jaxopt import BoxOSQP
 from typing import Optional, List, Tuple
 from jaxtyping import Float, Array
 from jaxopt import BoxCDQP
 from params import SufficientStats, ParamsCTDSConstraints
 import optax
 from functools import partial
+
 _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False) 
+_boxOSQP = BoxOSQP(tol=1e-8, maxiter=50000, verbose=False, primal_infeasible_tol=1e-10, dual_infeasible_tol=1e-10)
+
 
 #might change args to matvec functions
-#@jax.jit
-def solve_dale_QP(Q, c, mask):
+@jax.jit
+def solve_dale_QP(Q, c, mask,key):
     """
     Solve a sign-constrained quadratic program with cell-type-specific constraints.
 
@@ -42,16 +45,16 @@ def solve_dale_QP(Q, c, mask):
     #if mask is true cell is E cell
     #else cell is I cell
     #.where returns 0.0 for I cells and inf for E cells
-    lower = jnp.where(mask, 1e-3, -jnp.inf) #E cell lower bound is 0.0, I cell lower bound is -inf
-    upper = jnp.where(mask, jnp.inf, -1e-3) # I cell upper bound is 0.0, E cell upper bound is inf
+    lower = jnp.where(mask, 1e-12, -jnp.inf) #E cell lower bound is 0.0, I cell lower bound is -inf
+    upper = jnp.where(mask, jnp.inf, -1e-12) # I cell upper bound is 0.0, E cell upper bound is inf
 
-    init_x = jax.random.normal(jax.random.PRNGKey(42), (D,)) #TODO: find better way of intializing
-    
+    init_x = jax.random.normal(key, (D,)) #TODO: find better way of intializing
+    A = jnp.eye(D)  # Identity matrix as a placeholder for the linear constraints
     # Run the OSQP solver
-    sol = _boxCDQP.run( init_x, params_obj=(Q, c),   params_ineq=(lower, upper))
-  
-    #return sol.params.primal[0]  # Return the optimal parameters (solution vector)
-    return sol.params
+    init_params= _boxOSQP.init_params(init_x=init_x,params_obj=(Q, c),  params_eq=A, params_ineq=(lower, upper))
+    result = _boxOSQP.run( init_params=init_params, params_obj=(Q, c),  params_eq=A, params_ineq=(lower, upper))
+    sol = result.params.primal[0]
+    return sol
 
 
 @jax.jit
@@ -74,8 +77,13 @@ def solve_constrained_QP(Q, c, mask, isExcitatory, init_x, key=jax.random.PRNGKe
         lower = jnp.where(mask, 0, -jnp.inf)
         upper = jnp.where(mask, jnp.inf, jnp.inf)
         #init_x = jax.random.normal(key, (D,))
-        sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
-        return sol.params
+        A = jnp.eye(D)  # Identity matrix as a placeholder for the linear constraints
+        init_params= _boxOSQP.init_params(init_x=init_x,params_obj=(Q, c),  params_eq=A, params_ineq=(lower, upper))
+        sol = _boxOSQP.run(init_params=init_params, params_obj=(Q, c),  params_eq=A, params_ineq=(lower, upper)).params.primal[0]
+        return sol
+        #sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
+        #return sol.params
+
 
     def false_fn(args):
         """
@@ -86,8 +94,12 @@ def solve_constrained_QP(Q, c, mask, isExcitatory, init_x, key=jax.random.PRNGKe
         lower = jnp.where(mask, -jnp.inf, -jnp.inf)
         upper = jnp.where(mask, 0, jnp.inf)
         #init_x = jax.random.normal(key, (D,))
-        sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
-        return sol.params
+        #sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
+        #return sol.params
+        A = jnp.eye(D)  # Identity matrix as a placeholder for the linear constraints
+        init_params= _boxOSQP.init_params(init_x=init_x,params_obj=(Q, c),  params_eq=A, params_ineq=(lower, upper))
+        sol = _boxOSQP.run(init_params=init_params, params_obj=(Q, c),  params_eq=A, params_ineq=(lower, upper))
+        return sol.params.primal[0]
 
     return jax.lax.cond(isExcitatory, 
                     (Q, c, mask, key, init_x), true_fn, 
@@ -96,14 +108,17 @@ def solve_constrained_QP(Q, c, mask, isExcitatory, init_x, key=jax.random.PRNGKe
 
 
 
-#TODO: change to implementing with optax
 @jax.jit
 def jaxOpt_NNLS(Q, c, init_x):
     lower = jnp.zeros(c.shape[0])  # Non-negative constraint
     upper = jnp.inf * jnp.ones(c.shape[0])  # No upper bound
     #init_x = jax.random.uniform(jax.random.PRNGKey(42), (c.shape[0],), minval=0.0, maxval=1.0)
-    sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
-    return sol.params
+    #sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
+    #return sol.params
+    A = jnp.eye(c.shape[0])  # Identity matrix as a placeholder for the linear constraints
+    init_params= _boxOSQP.init_params(init_x=init_x,params_obj=(Q, c),  params_eq=A, params_ineq=(lower, upper))
+    sol = _boxOSQP.run(init_params=init_params, params_obj=(Q, c),  params_eq=A, params_ineq=(lower, upper)).params.primal[0]
+    return sol
 
 @jax.jit
 def Optax_NNLS(A, b, iters: Optional[int] = 1000):
@@ -209,6 +224,7 @@ def estimate_J( Y: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
 
     # X= Y_pastᵀ∈ ℝ^{(T-1) × N}
     X = Y_past.T  # (T-1, N)
+    keys = jax.random.split(jax.random.PRNGKey(0), num=N)
 
     epsilon = 1e-3  # Small regularization constant (can tune this)
    #Q = 2 Xᵀ X∈ ℝ^{N × N}, positive semidefinite
@@ -217,10 +233,12 @@ def estimate_J( Y: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
     assert check_qp_condition(Q), "Q is not well conditioned. Consider regularizing the model or checking the data."
 
     C = -2.0 * (X.T @ Y_future.T)            # shape (N, N) → column c_j is C[:, j] with shape (N,)
-    masks = jnp.tile(mask[None, :], (N, 1))  #shape (N, N), tile mask for each neuron 
+    #masks = jnp.tile(mask[None, :], (1, ))  #shape (N, N), tile mask for each neuron 
+    masks = jnp.tile(mask[:, None], (1, N))  # shape (N, N)
 
-    vmap_solver = jax.vmap(solve_dale_QP, in_axes=(None, 1, 0)) # vmap over each column of C and each row of Q
-    J=vmap_solver(Q, C, masks)  # shape (N, N)
+    vmap_solver = jax.vmap(solve_dale_QP, in_axes=(None, 1, 1,0)) # vmap over each column of C and each row of Q
+    J=vmap_solver(Q, C, masks, keys)  # shape (N, N)
+  
     return J
 
 
@@ -277,87 +295,9 @@ def blockwise_NMF(J, cell_constraints:ParamsCTDSConstraints):
 
 
 
-
-#@jax.jit
-def blockwise_NMF_jit(J, cell_constraints:ParamsCTDSConstraints):
-    """
-    Perform block-wise Non-negative Matrix Factorization (NMF) on the absolute Dale matrix |J|.
-    Each block corresponds to a specific cell type, and NMF is applied separately to each block.
-    Args:
-        J: (N, N) Dale matrix where J[i, j] is the weight from neuron j to neuron i.
-        cell_constraints: ParamsCellConstraints containing cell type information.
-            - cell_types: Array of shape (k,) with unique cell type labels.
-            - cell_type_dimensions: Array of shape (k,) with latent dimensions per cell type.
-            - cell_type_mask: Array of shape (N,) with cell type label for each neuron.
-    Returns:
-        Tuple of (U_factors, V_factors) where:
-            - U_factors: jnp.ndarray of shape (max_N_type, max_D_type, K) containing all U matrices
-            - V_factors: jnp.ndarray of shape (N, max_D_type, K) containing all V matrices
-            K is the number of cell types, padded with zeros for smaller dimensions
-    """
-    J_plus = jnp.abs(J)  # J⁺ = |J|, where J⁺_{ij} = |J_{ij}|
-    
-    cell_types = cell_constraints.cell_types
-    cell_type_dimensions = cell_constraints.cell_type_dimensions
-    cell_type_mask = cell_constraints.cell_type_mask 
-    
-    N = J_plus.shape[0]
-    K = len(cell_types)  # Number of cell types
-    
-    # Find maximum dimensions for padding
-    max_D_type = jnp.max(cell_type_dimensions).astype(int)
-    
-    # Calculate number of neurons per cell type
-    cell_type_counts = jnp.array([
-        jnp.sum(cell_type_mask == cell_type) for cell_type in cell_types
-    ])
-    max_N_type = jnp.max(cell_type_counts).astype(int)
-    
-    # Pre-allocate arrays for all factors (padded)
-    U_factors = jnp.zeros((max_N_type, max_D_type, K))
-    V_factors = jnp.zeros((N, max_D_type, K))
-    
-    def process_cell_type(i, arrays):
-        U_factors, V_factors = arrays
-        cell_type = cell_types[i]
-        D_type = cell_type_dimensions[i].astype(int)
-        
-        # Create mask for this cell type
-        type_mask = (cell_type_mask == cell_type)
-        
-        # Get indices and extract submatrix
-        idx_type = jnp.where(type_mask, size=max_N_type, fill_value=0)[0]
-        N_type = jnp.sum(type_mask).astype(int)
-        
-        # Extract relevant rows using advanced indexing
-        J_type = J_plus[idx_type[:N_type], :]  # shape: (N_type, N)
-        
-        # Initialize factors for this cell type block
-        key_u = jax.random.PRNGKey(i)
-        key_v = jax.random.PRNGKey(i + K)
-        
-        U_type = jax.random.uniform(key_u, (N_type, D_type), minval=0.1, maxval=1.0)
-        V_type = jax.random.uniform(key_v, (N, D_type), minval=0.1, maxval=1.0)
-        
-        # Apply NMF to this block
-        U_type, V_type = NMF(U_type, V_type, J_type)
-        
-        # Store in padded arrays
-        U_factors = U_factors.at[:N_type, :D_type, i].set(U_type)
-        V_factors = V_factors.at[:, :D_type, i].set(V_type)
-        
-        return U_factors, V_factors
-    
-    # Use fori_loop for JAX-compatible iteration
-    initial_arrays = (U_factors, V_factors)
-    final_U, final_V = jax.lax.fori_loop(0, K, process_cell_type, initial_arrays)
-    
-    return final_U, final_V
-
-
 @jax.jit
-def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
-
+def NMF(U_init, V_init, J, max_iterations=1000, relative_error=1e-4):
+    # J shape: (N_type, N)
     def cond_fun(state):
         """
         Condition for while loop termination:
@@ -367,8 +307,8 @@ def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
         """
         i, U, V = state
         numerator = jnp.linalg.norm(J- U @ V.T, ord='fro')**2
-        denominator = jnp.linalg.norm(J, ord='fro')**2
-        return (i==max_iterations) | (numerator / denominator < relative_error)
+        error = numerator / jnp.linalg.norm(J, ord='fro')**2
+        return (i!=max_iterations) & ( relative_error <= error)
 
 
     def body_fun(state):
@@ -378,23 +318,24 @@ def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
         #  Fix V, solve for each col uᵢ ∈ {1,...,N_E}:
         #  min_{uᵢ ≥ 0} ||VU.T[:, i] -J[:, i] ||_2²
         
-        Q1= V.T@V  #shape (D_E, D_E)
-        C1 = -2.0 * (J @ V)     # shape (N_E, DE) 
+        Q1= 2.0 * V.T@V  #shape (D_E, D_E)
+        C_T = -2.0 * (J @ V)     # shape (N_E, DE) 
+        C1=C_T.T  # shape (DE, N_E)
 
         #masks all True since doing non-negative least squares
         #masks = jnp.full((J.shape[0],Q1.shape[0]), True, dtype=bool) #shape (N_E, D_E)
-        
-        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1,1)) #vmap over each column of C1.T which is shape (D_E, 1)
-        U_new=vmap_solver(Q1, C1.T, jax.random.uniform(jax.random.PRNGKey(42), C1.T.shape, minval=0.0, maxval=1.0))  # shape (N_E, D_E)
+
+        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1,0)) #vmap over each column of C1.T which is shape (D_E, 1)
+        U_new=vmap_solver(Q1, C1, U)  # shape (N_E, D_E)
 
         #--------------V Step---------------
         #  Fix U, solve for each col vⱼ ∈ {1,...,N}:
         #  min_{vⱼ ≥ 0} ||UV[:, j] - J[:, j] ||_2²
-        Q2 = U_new.T @ U_new #shape (D_E, D_E)
+        Q2 = 2.0 * U_new.T @ U_new #shape (D_E, D_E)
         C2 = -2.0 * ( J.T @ U_new)  # shape  (N, D_E)
        #masks = jnp.full((J.shape[1], Q2.shape[0]), True, dtype=bool) # shape (N, D_E)
-        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1,1)) #Vmap over each column of C2.T which is shape (D_E, 1)
-        V_new = vmap_solver(Q2, C2.T, jax.random.uniform(jax.random.PRNGKey(42), C2.T.shape, minval=0.0, maxval=1.0))  # shape (N, D_E)
+        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1,0)) #Vmap over each column of C2.T which is shape (D_E, 1)
+        V_new = vmap_solver(Q2, C2.T, V)  # shape (N, D_E)
 
         return (i + 1, U_new, V_new)
     

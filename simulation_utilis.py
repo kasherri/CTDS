@@ -7,7 +7,58 @@ from params import ParamsCTDSConstraints,ParamsCTDS,ParamsCTDSEmissions,ParamsCT
 from models import CTDS
 import numpy as np
 
-
+def generate_observations_from_states(
+    states: jnp.ndarray,
+    C: jnp.ndarray,
+    R: jnp.ndarray,
+    key: jax.random.PRNGKey = jr.PRNGKey(42)
+) -> jnp.ndarray:
+    """
+    Generate observations from states using the emission model: y_t = C @ x_t + v_t
+    where v_t ~ N(0, R) is emission noise.
+    
+    Args:
+        states: (D, T) array of latent states over time
+        C: (N, D) emission matrix mapping states to observations
+        R: (N, N) emission covariance matrix or (N,) diagonal covariance
+        key: Random key for noise generation
+        
+    Returns:
+        observations: (N, T) array of observations
+    """
+    
+    D, T = states.shape
+    N = C.shape[0]
+    
+    # Validate dimensions
+    #assert C.shape == (N, D), f"C shape {C.shape} incompatible with states shape {states.shape}"
+    
+    # Handle both full covariance and diagonal covariance
+    if R.ndim == 1:
+        # Diagonal covariance - R is (N,) vector of variances
+        assert R.shape == (N,), f"Diagonal R shape {R.shape} incompatible with N={N}"
+        noise_std = jnp.sqrt(R)
+        
+        # Generate independent noise for each dimension
+        keys = jr.split(key, T)
+        noise = jnp.array([jr.normal(keys[t], (N,)) * noise_std for t in range(T)]).T
+        
+    elif R.ndim == 2:
+        # Full covariance matrix - R is (N, N)
+        assert R.shape == (N, N), f"Full R shape {R.shape} incompatible with N={N}"
+        
+        # Generate multivariate normal noise
+        keys = jr.split(key, T)
+        noise = jnp.array([jr.multivariate_normal(keys[t], jnp.zeros(N), R) for t in range(T)]).T
+        
+    else:
+        raise ValueError(f"R must be 1D (diagonal) or 2D (full covariance), got shape {R.shape}")
+    
+    # Generate observations: y_t = C @ x_t + v_t
+    linear_observations = C @ states  # (N, T)
+    observations = linear_observations + noise  # (N, T)
+    
+    return observations.T
 def generate_full_rank_matrix(key, T, N):
     """
     Generate an n x m matrix with linearly independent columns
@@ -117,14 +168,28 @@ def generate_CTDS_Params(
                 A = A.at[j,i].set(A[j,i] * latent_type)
     """
     #A=generate_nonneg_matrix(keys[1], D, D)  # Ensure non-negative dynamics
-    A=jr.uniform(keys[1], (D, D), minval=0.0, maxval=1.0) 
+    A=jnp.zeros((D,D))
+    A_keys = jr.split(keys[1], D)
+    for i in range(D):
+        latent_type = dynamics_mask[i]
+        key = A_keys[i]
+        #fill columns of A
+        if latent_type == -1:
+            A = A.at[:,i].set(jr.uniform(key, (D,), minval=-1.0, maxval=0.001))
+            #setting diagonal to be nonnegative
+            A = A.at[i, i].set(jnp.abs(A[i, i]))
+        else:
+            A = A.at[:,i].set(jr.uniform(key, (D,), minval=0.001, maxval=1.0))
+
+    """
+    A=jr.uniform(keys[1], (D, D), minval=0.001, maxval=1.0) 
     # Apply Dale's law to dynamics matrix
     for i in range(D):
         latent_type = dynamics_mask[i]
         for j in range(D):
             if i != j:  # Skip self-connections
                 A = A.at[j,i].set(A[j,i] * latent_type)
-    
+    """
     #A=0.5 * jnp.eye(D) + 0.5 * A  # Add positive bias for stability
     max_eigval = jnp.max(jnp.abs(jnp.linalg.eigvals(A)))
     if max_eigval != 0:
@@ -142,7 +207,7 @@ def generate_CTDS_Params(
         #get the number of neurons for this cell type
         N_type = jnp.sum(jnp.where(cell_type_mask == cell_types[i], 1, 0))
         D_type = cell_type_dimensions[i]
-        C_type=jr.uniform(keysC[i], (N_type, D_type), minval=0.0, maxval=1.0)
+        C_type=jr.uniform(keysC[i], (N_type, D_type), minval=0.0001, maxval=1.0)
         #C_type = generate_nonneg_matrix(keysC[i], N_type, D_type, noise=0.05, col_scale=1.0) *cell_sign[i]
         
         # create padded block: [zeros_left, U, zeros_right]
