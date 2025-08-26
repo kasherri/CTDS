@@ -435,7 +435,7 @@ class CTDS(SSM):
         R = jnp.diag(R_diag)
         delta_R = jnp.concatenate([m_step_state.delta_R, jnp.array([jnp.linalg.norm(R - params.emissions.cov)])])
 
-        #A, C, Q = _gauge_fix_clamped(A, C, Q, 0.3, 3.0 ,1e-6)
+        A, C, Q = _gauge_fix_clamped(A, C, Q, 0.3, 3.0 ,1e-6)
         dynamics = ParamsCTDSDynamics(weights=A, cov=Q, dynamics_mask=params.dynamics.dynamics_mask)
         emissions = ParamsCTDSEmissions(weights=C, cov=R, emission_dims=params.emissions.emission_dims, left_padding_dims=params.emissions.left_padding_dims, right_padding_dims=params.emissions.right_padding_dims)
 
