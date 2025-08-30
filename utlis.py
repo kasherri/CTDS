@@ -1,3 +1,41 @@
+"""
+Utility functions for Cell-Type Dynamical Systems (CTDS).
+
+This module provides core computational utilities for CTDS parameter estimation,
+constraint handling, and optimization. The main components include:
+
+1. **Constrained Optimization**: Quadratic programming solvers for Dale's law
+   and cell-type constraints (solve_dale_QP, solve_constrained_QP).
+
+2. **Non-negative Matrix Factorization**: Block-wise NMF routines for
+   decomposing connectivity matrices while preserving cell-type structure
+   (blockwise_NMF, blockwise_NNLS).
+
+3. **Connectivity Estimation**: Functions for estimating recurrent connectivity
+   from neural activity data (estimate_J).
+
+4. **Sufficient Statistics**: Computation of expected statistics for EM
+   algorithm (compute_sufficient_statistics).
+
+5. **Validation Utilities**: Functions for checking optimization conditions
+   and matrix properties (check_qp_condition, is_positive_semidefinite).
+
+Functions
+---------
+solve_dale_QP : Solve quadratic program with Dale's law constraints
+solve_constrained_QP : General constrained quadratic programming
+blockwise_NNLS : Non-negative least squares with block structure
+estimate_J : Estimate connectivity matrix from neural activity
+blockwise_NMF : Block-wise non-negative matrix factorization
+compute_sufficient_statistics : Compute EM sufficient statistics
+
+Notes
+-----
+All functions are JAX-compatible and designed for high-performance
+optimization on neural population data. Many routines handle Dale's law
+constraints ensuring biological plausibility of connectivity estimates.
+"""
+
 import jax
 import jax.numpy as jnp
 from jaxopt import BoxOSQP
@@ -12,41 +50,50 @@ _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False)
 _boxOSQP = BoxOSQP(tol=1e-8, maxiter=50000, verbose=False, primal_infeasible_tol=1e-10, dual_infeasible_tol=1e-10)
 
 
-#might change args to matvec functions
 @jax.jit
-def solve_dale_QP(Q, c, mask,key):
+def solve_dale_QP(Q, c, mask, key):
     """
-    Solve a sign-constrained quadratic program with cell-type-specific constraints.
+    Solve quadratic program with Dale's law constraints.
 
-    Problem form:
-        minimize    (1/2) * xᵀ Q x + cᵀ x
+    Solves the box-constrained quadratic program:
+        minimize    (1/2) * x^T Q x + c^T x
         subject to:
             x[i] >= 0      if mask[i] is True  (excitatory neuron)
             x[i] <= 0      if mask[i] is False (inhibitory neuron)
 
-    This is a box-constrained QP where:
-        - Excitatory (E) neurons can have positive weights
-        - Inhibitory (I) neurons are clamped to zero
+    This enforces Dale's law: excitatory neurons have non-negative weights,
+    inhibitory neurons have non-positive weights.
 
-    Args:
-        Q (jnp.ndarray): Positive semi-definite matrix of shape (D, D).
-        c (jnp.ndarray): Linear coefficient vector of shape (D,).
-        mask (jnp.ndarray of bools): Shape (D,). 
-            `True` → E-cell (allow ≥0),
-            `False` → I-cell (force to 0).
+    Parameters
+    ----------
+    Q : Array, shape (D, D)
+        Positive semi-definite Hessian matrix.
+    c : Array, shape (D,)
+        Linear coefficient vector.
+    mask : Array, shape (D,)
+        Boolean mask where True indicates excitatory cell, False inhibitory.
+    key : PRNGKey
+        Random key for solver initialization.
 
-    Returns:
-        jnp.ndarray: Solution vector x ∈ ℝ^D satisfying constraints.
+    Returns
+    -------
+    solution : Array, shape (D,)
+        Optimal solution vector satisfying Dale's law constraints.
+
+    Notes
+    -----
+    Uses BoxCDQP solver with appropriately set box constraints:
+    - Excitatory cells: [1e-12, inf] (effectively >= 0)
+    - Inhibitory cells: [-inf, -1e-12] (effectively <= 0)
+    
+    The small epsilon values prevent numerical issues at zero.
     """
-
     D = Q.shape[0]
-  
-   
-    #if mask is true cell is E cell
-    #else cell is I cell
-    #.where returns 0.0 for I cells and inf for E cells
-    lower = jnp.where(mask, 1e-12, -jnp.inf) #E cell lower bound is 0.0, I cell lower bound is -inf
-    upper = jnp.where(mask, jnp.inf, -1e-12) # I cell upper bound is 0.0, E cell upper bound is inf
+    
+    # Set box constraints based on cell type
+    # True (E-cell): allow >= 0, False (I-cell): force <= 0
+    lower = jnp.where(mask, 1e-12, -jnp.inf)  # E: >= 0, I: unbounded below
+    upper = jnp.where(mask, jnp.inf, -1e-12)  # E: unbounded above, I: <= 0
 
     init_x = jax.random.normal(key, (D,)) #TODO: find better way of intializing
     A = jnp.eye(D)  # Identity matrix as a placeholder for the linear constraints
@@ -59,15 +106,43 @@ def solve_dale_QP(Q, c, mask,key):
 
 @jax.jit
 def solve_constrained_QP(Q, c, mask, isExcitatory, init_x, key=jax.random.PRNGKey(0)):
-    """Solve a constrained quadratic program with excitatory/inhibitory constraints.
-    Args:
-        Q (jnp.ndarray): Positive semi-definite matrix of shape (D, D).
-        c (jnp.ndarray): Linear coefficient vector of shape (D,).
-        mask (jnp.ndarray of bools): Shape (D,). 
-            'False' → if diagonal element
-            'True' → if off-diagonal element
-        isExcitatory (bool): If True, solve for excitatory cells; if False, for inhibitory cells.
-        key (jax.random.PRNGKey): Random key for initialization."""
+    """
+    Solve constrained quadratic program with cell-type-specific constraints.
+
+    Solves the box-constrained quadratic program:
+        minimize    (1/2) * x^T Q x + c^T x
+    with constraints depending on cell type and matrix structure.
+
+    Parameters
+    ----------
+    Q : Array, shape (D, D)
+        Positive semi-definite Hessian matrix.
+    c : Array, shape (D,)
+        Linear coefficient vector.
+    mask : Array, shape (D,)
+        Boolean mask where True indicates off-diagonal elements,
+        False indicates diagonal elements.
+    isExcitatory : bool
+        If True, solve for excitatory neuron (non-negative off-diagonal);
+        if False, solve for inhibitory neuron (non-positive off-diagonal).
+    init_x : Array, shape (D,)
+        Initial solution guess.
+    key : PRNGKey, optional
+        Random key for solver initialization.
+
+    Returns
+    -------
+    solution : Array, shape (D,)
+        Optimal solution satisfying cell-type constraints.
+
+    Notes
+    -----
+    Constraint structure:
+    - Excitatory: off-diagonal >= 0, diagonal unconstrained
+    - Inhibitory: off-diagonal <= 0, diagonal unconstrained
+    
+    Uses conditional computation via jax.lax.cond for efficiency.
+    """
     def true_fn(args):
         """
         all entries are nonnegative except diagonals. True=Non-negative, False=unconstrained diagonal
@@ -110,19 +185,67 @@ def solve_constrained_QP(Q, c, mask, isExcitatory, init_x, key=jax.random.PRNGKe
 
 @jax.jit
 def jaxOpt_NNLS(Q, c, init_x):
+    """
+    Solve non-negative least squares using quadratic programming.
+
+    Solves the constrained quadratic program:
+        minimize    (1/2) * x^T Q x + c^T x
+        subject to:  x >= 0
+
+    Parameters
+    ----------
+    Q : Array, shape (D, D)
+        Positive semi-definite Hessian matrix.
+    c : Array, shape (D,)
+        Linear coefficient vector.
+    init_x : Array, shape (D,)
+        Initial solution guess.
+
+    Returns
+    -------
+    solution : Array, shape (D,)
+        Non-negative optimal solution.
+
+    Notes
+    -----
+    Uses BoxOSQP solver with non-negativity constraints.
+    Equivalent to solving min ||Ax - b||^2 s.t. x >= 0
+    where Q = A^T A and c = -A^T b.
+    """
     lower = jnp.zeros(c.shape[0])  # Non-negative constraint
     upper = jnp.inf * jnp.ones(c.shape[0])  # No upper bound
-    #init_x = jax.random.uniform(jax.random.PRNGKey(42), (c.shape[0],), minval=0.0, maxval=1.0)
-    #sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
-    #return sol.params
-    A = jnp.eye(c.shape[0])  # Identity matrix as a placeholder for the linear constraints
-    init_params= _boxOSQP.init_params(init_x=init_x,params_obj=(Q, c),  params_eq=A, params_ineq=(lower, upper))
-    sol = _boxOSQP.run(init_params=init_params, params_obj=(Q, c),  params_eq=A, params_ineq=(lower, upper)).params.primal[0]
+    A = jnp.eye(c.shape[0])  # Identity matrix placeholder
+    init_params = _boxOSQP.init_params(init_x=init_x, params_obj=(Q, c), params_eq=A, params_ineq=(lower, upper))
+    sol = _boxOSQP.run(init_params=init_params, params_obj=(Q, c), params_eq=A, params_ineq=(lower, upper)).params.primal[0]
     return sol
 
 @jax.jit
 def Optax_NNLS(A, b, iters: Optional[int] = 1000):
-    vec=optax.nnls(A, b, iters=iters)
+    """
+    Solve non-negative least squares using Optax.
+
+    Solves: minimize ||Ax - b||^2 subject to x >= 0
+
+    Parameters
+    ----------
+    A : Array, shape (M, N)
+        Design matrix.
+    b : Array, shape (M,)
+        Target vector.
+    iters : int, optional
+        Maximum number of iterations (default: 1000).
+
+    Returns
+    -------
+    solution : Array, shape (N,)
+        Non-negative least squares solution.
+
+    Notes
+    -----
+    Uses Optax's built-in NNLS solver which implements
+    an active-set algorithm.
+    """
+    vec = optax.nnls(A, b, iters=iters)
     return vec
 
 
@@ -389,18 +512,46 @@ def build_A(U, V_dale):
 
 def compute_sufficient_statistics(posterior) -> SufficientStats:
     """
-    Compute sufficient statistics from smoothed posterior for EM updates.
+    Compute sufficient statistics from smoothed posterior for EM algorithm.
 
-    Args:
-        posterior: PosteriorGSSMSmoothed
-            Must have attributes:
-            - smoothed_means:        (T, K)
-            - smoothed_covariances:  (T, K, K)
-            - smoothed_cross_covariances: (T-1, K, K)
-            - marginal_loglik:       scalar
+    Transforms Dynamax posterior results into the sufficient statistics
+    format required for CTDS M-step parameter updates.
 
-    Returns:
-        SufficientStats: a NamedTuple of fixed-shape JAX arrays
+    Parameters
+    ----------
+    posterior : PosteriorGSSMSmoothed
+        Dynamax smoother output containing:
+        - smoothed_means : Array, shape (T, K)
+            Posterior state means E[x_t | y_{1:T}]
+        - smoothed_covariances : Array, shape (T, K, K)  
+            Posterior state covariances Cov[x_t | y_{1:T}]
+        - smoothed_cross_covariances : Array, shape (T-1, K, K)
+            Cross-time covariances Cov[x_t, x_{t-1} | y_{1:T}]
+        - marginal_loglik : float
+            Marginal log-likelihood p(y_{1:T})
+
+    Returns
+    -------
+    stats : SufficientStats
+        Sufficient statistics containing:
+        - latent_mean : Array, shape (T, K)
+            E[x_t | y_{1:T}]
+        - latent_second_moment : Array, shape (T, K, K)
+            E[x_t x_t^T | y_{1:T}] = Cov + mean ⊗ mean  
+        - cross_time_moment : Array, shape (T-1, K, K)
+            E[x_t x_{t-1}^T | y_{1:T}]
+        - loglik : float
+            Marginal log-likelihood
+        - T : int
+            Sequence length
+
+    Notes
+    -----
+    Second moments are computed using the identity:
+    E[x_t x_t^T] = Cov[x_t] + E[x_t] E[x_t]^T
+    
+    These statistics are sufficient for maximum likelihood estimation
+    in the M-step of the EM algorithm.
     """
     mu = posterior.smoothed_means
     Sigma = posterior.smoothed_covariances
