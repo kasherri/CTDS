@@ -200,9 +200,6 @@ See Jupyter notebooks:
 - `ctds_initialization_diagnostics.ipynb`: Parameter initialization
 - `ctds_model_validation.ipynb`: Model validation and testing
 
-## Citation
-
-TODO
 
 ## License
 
