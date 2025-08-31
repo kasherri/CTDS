@@ -20,10 +20,12 @@ CTDS models neural population activity using linear dynamical systems that respe
 The CTDS model describes neural dynamics as:
 
 **Latent dynamics:**
+
 $$x_{t+1} = A x_t +B u_t+ w_t, \quad  w_t ~ N(0, Q)$$
 
 
 **Observations:**  
+
 $$
 y_t = C x_t + v_t,  \quad   v_t ~ N(0, R)
 $$
@@ -33,11 +35,91 @@ $$
 TODO
 
 
-## Quick Start
 
 ### Installation
 
-TODO
+#### Quick Setup (Recommended)
+
+Clone the repository and run the setup script:
+
+```bash
+git clone https://github.com/kasherri/CTDS.git
+cd CTDS
+./setup.sh
+```
+
+The setup script will:
+- Check Python version (3.9+ required)
+- Create a virtual environment
+- Install all dependencies
+- Install CTDS in development mode
+- Run basic tests to verify installation
+
+#### Manual Installation
+
+If you prefer manual setup:
+
+```bash
+# Clone repository
+git clone https://github.com/kasherri/CTDS.git
+cd CTDS
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install package
+pip install -e .
+
+# Install development dependencies (optional)
+pip install -e ".[dev,docs,examples]"
+```
+
+#### From PyPI (Future Release)
+
+```bash
+pip install ctds
+```
+
+#### Development Commands
+
+After installation, use the provided Makefile for common tasks:
+
+```bash
+make help      # Show all available commands
+make demo      # Run quickstart demo
+make test      # Run test suite
+make docs      # Build and serve documentation
+make format    # Format code
+make lint      # Lint code
+```
+
+#### Requirements
+
+- Python 3.9+
+- JAX 0.4.0+
+- See `pyproject.toml` for complete dependency list
+
+#### Verify Installation
+
+After installation, verify everything works:
+
+```bash
+# Activate environment (if not already active)
+source .venv/bin/activate
+
+# Test basic import
+python -c "import ctds; print('CTDS imported successfully!')"
+
+# Run test suite
+python -m pytest tests/
+
+# Test JAX backend
+python -c "import jax; print(f'JAX backend: {jax.default_backend()}')"
+
+# Run quickstart demo
+python quickstart.py
+```
 
 ### Basic Usage
 
