@@ -132,7 +132,7 @@ plugins:
       nav_file: SUMMARY.md
   - section-index
   - mkdocs-jupyter:
-      execute: true
+      execute: false
       include_source: true
 
 extra_javascript:
@@ -140,13 +140,19 @@ extra_javascript:
   - https://polyfill.io/v3/polyfill.min.js?features=es6
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 
+
 nav:
   - Home: index.md
-  - Installation: installation.md
-  - Quick Start: quickstart.md
-  - Examples:
-    - CTDS Initialization Diagnostics: examples/ctds_initialization_diagnostics.md
-    - CTDS Model Validation: examples/ctds_model_validation.md
-  - API Reference: reference/
-  - Contributing: contributing.md
+  - User Guide:
+      - What is CTDS?: user-guide/index.md#what-is-ctds
+      - Key Concepts: user-guide/index.md#key-concepts  
+      - Model Architecture: user-guide/index.md#model-architecture
+      - Parameter Structure: user-guide/index.md#parameter-structure
+      - Training Workflow: user-guide/index.md#training-workflow
+      - Inference & Prediction: user-guide/index.md#inference-and-prediction
+      - Constraints & Dale's Law: user-guide/index.md#constraints-and-dales-law
+      - Best Practices: user-guide/index.md#best-practices
+      - Troubleshooting: user-guide/index.md#troubleshooting
+  - Development:
+    - Contributing: contributing.md
   - Changelog: changelog.md
