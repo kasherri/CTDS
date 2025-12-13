@@ -286,8 +286,8 @@ def blockwise_NMF_jit(J, cell_constraints:ParamsCTDSConstraints):
 
 
 @jax.jit
-def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
-
+def NMF(U_init, V_init, J, max_iterations=1000, relative_error=1e-4):
+    # J shape: (N_type, N)
     def cond_fun(state):
         """
         Condition for while loop termination:
@@ -297,8 +297,8 @@ def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
         """
         i, U, V = state
         numerator = jnp.linalg.norm(J- U @ V.T, ord='fro')**2
-        denominator = jnp.linalg.norm(J, ord='fro')**2
-        return (i==max_iterations) | (numerator / denominator < relative_error)
+        error = numerator / jnp.linalg.norm(J, ord='fro')**2
+        return (i!=max_iterations) & ( relative_error <= error)
 
 
     def body_fun(state):
@@ -308,24 +308,24 @@ def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
         #  Fix V, solve for each col uᵢ ∈ {1,...,N_E}:
         #  min_{uᵢ ≥ 0} ||VU.T[:, i] -J[:, i] ||_2²
         
-        Q1= V.T@V  #shape (D_E, D_E)
-        C1 = -2.0 * (J @ V)     # shape (N_E, DE) 
+        Q1= 2.0 * V.T@V  #shape (D_E, D_E)
+        C_T = -2.0 * (J @ V)     # shape (N_E, DE) 
+        C1=C_T.T  # shape (DE, N_E)
 
         #masks all True since doing non-negative least squares
         #masks = jnp.full((J.shape[0],Q1.shape[0]), True, dtype=bool) #shape (N_E, D_E)
-        
-        vmap_solver = jax.vmap(NNLS, in_axes=(None, 1)) #vmap over each column of C1.T which is shape (D_E, 1)
-        U_new=vmap_solver(Q1, C1.T)  # shape (N_E, D_E)
+
+        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1,0)) #vmap over each column of C1.T which is shape (D_E, 1)
+        U_new=vmap_solver(Q1, C1, U)  # shape (N_E, D_E)
 
         #--------------V Step---------------
         #  Fix U, solve for each col vⱼ ∈ {1,...,N}:
         #  min_{vⱼ ≥ 0} ||UV[:, j] - J[:, j] ||_2²
-        Q2 = U_new.T @ U_new #shape (D_E, D_E)
+        Q2 = 2.0 * U_new.T @ U_new #shape (D_E, D_E)
         C2 = -2.0 * ( J.T @ U_new)  # shape  (N, D_E)
-       
-        #masks = jnp.full((J.shape[1], Q2.shape[0]), True, dtype=bool) # shape (N, D_E)
-        vmap_solver = jax.vmap(NNLS, in_axes=(None, 1)) #Vmap over each column of C2.T which is shape (D_E, 1)
-        V_new = vmap_solver(Q2, C2.T)  # shape (N, D_E)
+       #masks = jnp.full((J.shape[1], Q2.shape[0]), True, dtype=bool) # shape (N, D_E)
+        vmap_solver = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1,0)) #Vmap over each column of C2.T which is shape (D_E, 1)
+        V_new = vmap_solver(Q2, C2.T, V)  # shape (N, D_E)
 
         return (i + 1, U_new, V_new)
     
@@ -336,78 +336,63 @@ def NMF(U_init, V_init, J, max_iterations=100000, relative_error=1e-8):
     _, U_final, V_final = final_state
     return U_final, V_final
 
-
-
-def build_U(U1, U2):
-    """
-    Constructs block-diagonal emission matrix:
-        U = [[U1,  0 ],
-             [ 0,  U2]]
-    
-    Args:
-        U1: shape (NE, K1), excitatory emission matrix
-        U2: shape (NI, K2), inhibitory emission matrix
-
-    Returns:
-        U: shape (NE + NI, K1 + K2), block-diagonal emission matrix
-    """
-    NE, K1 = U1.shape
-    NI, K2 = U2.shape
-
-    top    = jnp.concatenate([U1, jnp.zeros((NE, K2))], axis=1)
-    bottom = jnp.concatenate([jnp.zeros((NI, K1)), U2], axis=1)
-
-    U = jnp.concatenate([top, bottom], axis=0)
-    return U
-
-
-
-# Step 6: initial A₀ = V_daleᵀ @ U
-def build_A(U, V_dale):
-    """
-    Compute initial latent dynamics matrix:
-      A = V_dale^T @ U
-    """
-    return V_dale.T @ U
-
-
-
-
-
-
-
-
 def compute_sufficient_statistics(posterior) -> SufficientStats:
     """
-    Compute sufficient statistics from smoothed posterior for EM updates.
+    Compute sufficient statistics from smoothed posterior for EM algorithm.
 
-    Args:
-        posterior: PosteriorGSSMSmoothed
-            Must have attributes:
-            - smoothed_means:        (T, K)
-            - smoothed_covariances:  (T, K, K)
-            - smoothed_cross_covariances: (T-1, K, K)
-            - marginal_loglik:       scalar
+    Transforms Dynamax posterior results into the sufficient statistics
+    format required for CTDS M-step parameter updates.
 
-    Returns:
-        SufficientStats: a NamedTuple of fixed-shape JAX arrays
+    Parameters
+    ----------
+    posterior : PosteriorGSSMSmoothed
+        Dynamax smoother output containing:
+        - smoothed_means : Array, shape (T, K)
+            Posterior state means E[x_t | y_{1:T}]
+        - smoothed_covariances : Array, shape (T, K, K)  
+            Posterior state covariances Cov[x_t | y_{1:T}]
+        - smoothed_cross_covariances : Array, shape (T-1, K, K)
+            Cross-time covariances Cov[x_t, x_{t-1} | y_{1:T}]
+        - marginal_loglik : float
+            Marginal log-likelihood p(y_{1:T})
+
+    Returns
+    -------
+    stats : SufficientStats
+        Sufficient statistics containing:
+        - latent_mean : Array, shape (T, K)
+            E[x_t | y_{1:T}]
+        - latent_second_moment : Array, shape (T, K, K)
+            E[x_t x_t^T | y_{1:T}] = Cov + mean ⊗ mean  
+        - cross_time_moment : Array, shape (T-1, K, K)
+            E[x_t x_{t-1}^T | y_{1:T}]
+        - loglik : float
+            Marginal log-likelihood
+        - T : int
+            Sequence length
+
+    Notes
+    -----
+    Second moments are computed using the identity:
+    E[x_t x_t^T] = Cov[x_t] + E[x_t] E[x_t]^T
+    
+    These statistics are sufficient for maximum likelihood estimation
+    in the M-step of the EM algorithm.
     """
     mu = posterior.smoothed_means
     Sigma = posterior.smoothed_covariances
     cross = posterior.smoothed_cross_covariances
 
-    # E[z_t z_t^T] = smoothed_covariances + outer(smoothed_means, smoothed_means)
-    EzzT = Sigma + jnp.einsum("ti,tj->tij", mu, mu)
+    # E[x_t x_t^T] = smoothed_covariances + outer(smoothed_means, smoothed_means)
+    ExxT = Sigma + jnp.einsum("ti,tj->tij", mu, mu)
 
     return SufficientStats(
         latent_mean=mu,
-        latent_second_moment=EzzT,
+        latent_second_moment=ExxT,
         cross_time_moment=cross,
         loglik=jnp.array(posterior.marginal_loglik, float),
         T=mu.shape[0]
     )
-
-
 
 
 #TO DO: Multiregion estimate_J

@@ -8,12 +8,43 @@ from params import ParamsCTDS, SufficientStats, ParamsCTDSDynamics, ParamsCTDSEm
 from abc import ABC, abstractmethod
 from inference import InferenceBackend, DynamaxLGSSMBackend
 from tensorflow_probability.substrates.jax import distributions as tfd
-
+from jaxopt import BoxCDQP
 from utlis import estimate_J,blockwise_NMF, solve_constrained_QP, NNLS, check_qp_condition
 from functools import partial
 from dynamax.ssm import SSM
 jax.config.update("jax_enable_x64", True)
 from jax.experimental.layout import DeviceLocalLayout, Layout 
+
+
+
+#@partial(jax.jit, static_argnames=("maxiter","tol"))
+def update_C_nonneg_boxcdqp(Mxx, Ytil, C_init, maxiter=20_000, tol=1e-7):
+    """
+    Solve for C >= 0 using N independent BoxCDQP solves (one per row).
+      min_{c_n} 0.5 c_n^T Mxx c_n - ytil_n^T c_n
+      s.t.      c_n >= 0
+
+    Inputs:
+      Mxx:   (D, D)
+      Ytil:  (N, D)
+      C_init:(N, D)
+    Returns:
+      C: (N, D) with C >= 0
+    """
+    N, D = Ytil.shape
+    P = Mxx
+    solver = BoxCDQP(maxiter=maxiter, tol=tol)
+
+    lb = jnp.zeros((D,))            # >= 0
+    ub = jnp.full((D,), jnp.inf)    # no upper bound
+
+    def solve_one(ytil_n, c0):
+        q = -ytil_n                 # because objective is 0.5 x^T P x + q^T x
+        sol = solver.run(params_obj=(P, q), l=lb, u=ub, init_params=c0).params
+        return sol.primal           # (D,)
+
+    C = jax.vmap(solve_one, in_axes=(0, 0))(Ytil, C_init)
+    return C
 
 #maybe later implement as subclass of dynamax SSM. right now dont see a reason to do so
 class BaseCTDS(ABC):
@@ -301,9 +332,37 @@ class CTDS(SSM):
             loglik=0.0,  # optional, unused in M-step
             T=latent_mean.shape[0]
         )
+        D=params.dynamics.weights.shape[0]
         T=stats.T
+        Q=params.emissions.cov
+        R=params.dynamics.cov
+
+        #sufficient stats we need 
+        Mt_1= jnp.sum(latent_second_moment[:-1], axis=0)# (D, D)
+        Mxx=jnp.sum(latent_second_moment, axis=0) # (D, D)
+        # M_Δ = sum_{t=1}^{T-1} E[x_{t+1} x_t^T]
+        Mdelta = jnp.sum(jnp.swapaxes(cross_time_moment, -1, -2), axis=0)  # (D, D)
+
+
         #------------Update A---------------------
+        Qinv = jnp.linalg.inv(Q)
+        alpha = jnp.max(jnp.abs(Qinv))
+        Qtil = Qinv / alpha
+        L = jnp.linalg.cholesky(Qtil, lower=True)  # Qtil = L L^T
         
+        masks = jnp.ravel(jnp.logical_not(jnp.eye(D, dtype=jnp.bool_)), order='F')#D**2 column major vectorization
+        cell_type_mask = jnp.ravel(jnp.where(params.dynamics.dynamics_mask==-1, False, True, order='F')) #D**2 column major vectorization
+        
+        # Quadratic / linear terms
+        # P_A = (I ⊗ L^T) (M11 ⊗ I) (I ⊗ L) = (M11 ⊗ (L^T L))
+        P_A = -2.0 * jnp.kron(Mt_1, (L.T @ L)) 
+        q_A = - jnp.ravel(Qtil.T @ Mdelta.T, order='F')
+        vmap_solver1 = jax.vmap(solve_constrained_QP, in_axes=(None, None,None,0))
+        A_vec= vmap_solver1(P_A, q_A, cell_type_mask, masks ) #D**2 in column major order
+        A= jnp.reshape(A_vec, (D,D), order='F')
+        delta_A =jnp.concatenate([m_step_state.delta_A, jnp.array([jnp.linalg.norm(A - params.dynamics.weights)] )])
+
+        """
         # latent_mean: (T, D) ⇒ Ex: (D, T)
         Ex = stats.latent_mean.T
         X  = Ex[:, :-1]     # (D, T-1)   past
@@ -325,6 +384,7 @@ class CTDS(SSM):
 
         A= vmap_solver1(H1, F1, masks, cell_type_mask)  # shape (D, D)
         delta_A =jnp.concatenate([m_step_state.delta_A, jnp.array([jnp.linalg.norm(A - params.dynamics.weights)] )])
+        """
 
         #---------Update Q------------------------
         # Q = (1/(T-1)) * sum_{t=2}^T [E[x_t x_t^T] - A E[x_{t-1} x_t^T]^T - E[x_t x_{t-1}^T] A^T + A E[x_{t-1} x_{t-1}^T] A^T]
@@ -343,7 +403,12 @@ class CTDS(SSM):
         
         #---------Update C---------------------------
         Y_obs=params.observations # shape (N, T)
+        Ytil = Y_obs.T @ latent_mean
+        C_init=params.emissions.weights
+        C=update_C_nonneg_boxcdqp(Mxx, Ytil, C_init)
 
+
+        """
         # H2 = Ex @ Ex.T, F2 = Ex @ Y_obs.T   (do as contractions)
         H2 = jnp.einsum('dt,et->de', Ex, Ex) + 1e-3 * jnp.eye(X.shape[0])  # (D, D)
         F2 = jnp.einsum('dt,nt->dn', Ex, Y_obs)  # (D, N)
@@ -354,6 +419,7 @@ class CTDS(SSM):
         #Vmap over N columns of F2. Each column corresponds to f= X @ y_i ∈ ℝ^D
         vmap_solver2 = jax.vmap(NNLS, in_axes=(None, 1)) 
         C= vmap_solver2(H2, F2) #shape (N, D)
+        """
         delta_C = jnp.concatenate([m_step_state.delta_C, jnp.array([jnp.linalg.norm(C - params.emissions.weights)])])
 
         #---------Update R----------------------------
@@ -372,7 +438,7 @@ class CTDS(SSM):
 
         """
         # Alternatively, estimate R as diagonal matrix with average residual variance per neuron
-        Y_pred = C @ Ex  # shape (N, T)
+        Y_pred = C @ latent_mean  # shape (N, T)
         resid = Y_obs - Y_pred  # shape (N, T)
         R_diag = jnp.mean(resid ** 2, axis=1)  # shape (N,)
         R = jnp.diag(R_diag) # shape (N, N)
