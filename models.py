@@ -14,7 +14,7 @@ from functools import partial
 from dynamax.ssm import SSM
 jax.config.update("jax_enable_x64", True)
 from jax.experimental.layout import DeviceLocalLayout, Layout 
-
+_boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False) 
 
 
 #@partial(jax.jit, static_argnames=("maxiter","tol"))
@@ -334,8 +334,8 @@ class CTDS(SSM):
         )
         D=params.dynamics.weights.shape[0]
         T=stats.T
-        Q=params.emissions.cov
-        R=params.dynamics.cov
+        Q=params.dynamics.cov
+        R=params.emissions.cov
 
         #sufficient stats we need 
         Mt_1= jnp.sum(latent_second_moment[:-1], axis=0)# (D, D)
@@ -345,20 +345,32 @@ class CTDS(SSM):
 
 
         #------------Update A---------------------
+        #Normalizing Q for numerical stabilitu
         Qinv = jnp.linalg.inv(Q)
         alpha = jnp.max(jnp.abs(Qinv))
-        Qtil = Qinv / alpha
-        L = jnp.linalg.cholesky(Qtil, lower=True)  # Qtil = L L^T
+        Qtil = Qinv / alpha 
+
+        #Cholesky decomposition for easier calculation
+        L = jnp.linalg.cholesky(Qtil)  # Qtil = L L^T
         
-        masks = jnp.ravel(jnp.logical_not(jnp.eye(D, dtype=jnp.bool_)), order='F')#D**2 column major vectorization
-        cell_type_mask = jnp.ravel(jnp.where(params.dynamics.dynamics_mask==-1, False, True, order='F')) #D**2 column major vectorization
+        #False for diagonal entries 
+        diag_masks = jnp.ravel(jnp.logical_not(jnp.eye(D, dtype=jnp.bool_)), order='F')#D**2 column major vectorization. False
+        
+        #lb for inhibitory is -jnp.inf and -1e-6 for Excitory
+        cell_type_lb = jnp.ravel(jnp.where(params.dynamics.dynamics_mask==-1, -jnp.inf, -1e-6), order='F') #D**2 column major vectorization  
+        lb=jnp.where(diag_masks, cell_type_lb,-jnp.inf ) #unconstrained for diagonal entry
+
+        #ub for inhibitory is 1e-6 and inf for Excitory
+        cell_type_ub = jnp.ravel(jnp.where(params.dynamics.dynamics_mask==-1, 1e-6, jnp.inf), order='F')
+        ub =jnp.where(diag_masks, cell_type_lb,jnp.inf )#unconstrained for diagonal entry
         
         # Quadratic / linear terms
         # P_A = (I ⊗ L^T) (M11 ⊗ I) (I ⊗ L) = (M11 ⊗ (L^T L))
-        P_A = -2.0 * jnp.kron(Mt_1, (L.T @ L)) 
-        q_A = - jnp.ravel(Qtil.T @ Mdelta.T, order='F')
-        vmap_solver1 = jax.vmap(solve_constrained_QP, in_axes=(None, None,None,0))
-        A_vec= vmap_solver1(P_A, q_A, cell_type_mask, masks ) #D**2 in column major order
+        #P_A = -2.0 * jnp.kron(Mt_1, (L.T @ L)) #multiplying by
+        P_A=jnp.kron(Mt_1, (L.T @ L)) #(D^2,D^2 )
+        q_A = - jnp.ravel(Qtil.T @ Mdelta.T, order='F')#(D^2,)
+        A_init=jnp.ravel(params.dynamics.weights, order='F')
+        A_vec=_boxCDQP(A_init,params_obj=(P_A, q_A),params_ineq=(lb,ub) )
         A= jnp.reshape(A_vec, (D,D), order='F')
         delta_A =jnp.concatenate([m_step_state.delta_A, jnp.array([jnp.linalg.norm(A - params.dynamics.weights)] )])
 
