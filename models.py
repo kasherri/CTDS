@@ -17,34 +17,45 @@ from jax.experimental.layout import DeviceLocalLayout, Layout
 _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False) 
 
 
-#@partial(jax.jit, static_argnames=("maxiter","tol"))
-def update_C_nonneg_boxcdqp(Mxx, Ytil, C_init, maxiter=20_000, tol=1e-7):
+def create_emission_bounds(constraints: ParamsCTDSConstraints, D: int, N: int) -> Tuple[Array, Array]:
     """
-    Solve for C >= 0 using N independent BoxCDQP solves (one per row).
-      min_{c_n} 0.5 c_n^T Mxx c_n - ytil_n^T c_n
-      s.t.      c_n >= 0
-
-    Inputs:
-      Mxx:   (D, D)
-      Ytil:  (N, D)
-      C_init:(N, D)
+    Create lower and upper bounds for emission matrix C with blockwise constraints.
+    
+    For each neuron n:
+    - Latent dimensions belonging to neuron's cell type: lb=0, ub=inf (non-negative)
+    - All other latent dimensions: lb=0, ub=0 (forced to zero)
+    
+    Args:
+        constraints: CTDS constraints containing cell type information
+        D: Total number of latent dimensions
+        N: Total number of neurons
+    
     Returns:
-      C: (N, D) with C >= 0
+        lb: (N, D) lower bounds
+        ub: (N, D) upper bounds
     """
-    N, D = Ytil.shape
-    P = Mxx
-    solver = BoxCDQP(maxiter=maxiter, tol=tol)
+    # Create mask indicating which (neuron, latent_dim) pairs belong to same cell type
+    # neuron_to_cell_type: (N,) - cell type for each neuron
+    # latent_to_cell_type: (D,) - cell type for each latent dimension
+    
+    # First, create latent_to_cell_type from cell_type_dimensions
+    latent_to_cell_type = jnp.repeat(
+        constraints.cell_types,  # (K,)
+        constraints.cell_type_dimensions  # (K,)
+    )  # Shape: (D,) - maps each latent dim to its cell type
+    
+    # Create mask: (N, D) - True where neuron and latent dim have same cell type
+    neuron_cell_types = constraints.cell_type_mask[:, None]  # (N, 1)
+    latent_cell_types = latent_to_cell_type[None, :]  # (1, D)
+    same_cell_type = neuron_cell_types == latent_cell_types  # (N, D)
+    
+    # Create bounds
+    lb = jnp.zeros((N, D))  # All entries >= 0
+    ub = jnp.where(same_cell_type, jnp.inf, 0.0)  # inf for same cell type, 0 otherwise
+    
+    return lb, ub
 
-    lb = jnp.zeros((D,))            # >= 0
-    ub = jnp.full((D,), jnp.inf)    # no upper bound
 
-    def solve_one(ytil_n, c0):
-        q = -ytil_n                 # because objective is 0.5 x^T P x + q^T x
-        sol = solver.run(params_obj=(P, q), l=lb, u=ub, init_params=c0).params
-        return sol.primal           # (D,)
-
-    C = jax.vmap(solve_one, in_axes=(0, 0))(Ytil, C_init)
-    return C
 
 #maybe later implement as subclass of dynamax SSM. right now dont see a reason to do so
 class BaseCTDS(ABC):
@@ -333,13 +344,15 @@ class CTDS(SSM):
             T=latent_mean.shape[0]
         )
         D=params.dynamics.weights.shape[0]
+        N=params.emissions.weights.shape[0]
         T=stats.T
         Q=params.dynamics.cov
         R=params.emissions.cov
 
         #sufficient stats we need 
         Mt_1= jnp.sum(latent_second_moment[:-1], axis=0)# (D, D)
-        Mxx=jnp.sum(latent_second_moment, axis=0) # (D, D)
+        # Mxx = sum_{t=1}^{T} E[x_t x_t^T]
+        Mxx=jnp.sum(latent_second_moment, axis=0) # (D, D) 
         # M_Δ = sum_{t=1}^{T-1} E[x_{t+1} x_t^T]
         Mdelta = jnp.sum(jnp.swapaxes(cross_time_moment, -1, -2), axis=0)  # (D, D)
 
@@ -357,12 +370,13 @@ class CTDS(SSM):
         diag_masks = jnp.ravel(jnp.logical_not(jnp.eye(D, dtype=jnp.bool_)), order='F')#D**2 column major vectorization. False
         
         #lb for inhibitory is -jnp.inf and -1e-6 for Excitory
-        cell_type_lb = jnp.ravel(jnp.where(params.dynamics.dynamics_mask==-1, -jnp.inf, -1e-6), order='F') #D**2 column major vectorization  
+        
+        cell_type_lb = jnp.ravel(jnp.tile(jnp.where(params.dynamics.dynamics_mask==-1, -jnp.inf, -1e-6),(D,1)), order='F') #D**2 column major vectorization  
         lb=jnp.where(diag_masks, cell_type_lb,-jnp.inf ) #unconstrained for diagonal entry
 
         #ub for inhibitory is 1e-6 and inf for Excitory
-        cell_type_ub = jnp.ravel(jnp.where(params.dynamics.dynamics_mask==-1, 1e-6, jnp.inf), order='F')
-        ub =jnp.where(diag_masks, cell_type_lb,jnp.inf )#unconstrained for diagonal entry
+        cell_type_ub = jnp.ravel(jnp.tile(jnp.where(params.dynamics.dynamics_mask==-1, 1e-6, jnp.inf), (D,1)), order='F')
+        ub =jnp.where(diag_masks, cell_type_ub,jnp.inf )#unconstrained for diagonal entry
         
         # Quadratic / linear terms
         # P_A = (I ⊗ L^T) (M11 ⊗ I) (I ⊗ L) = (M11 ⊗ (L^T L))
@@ -370,7 +384,7 @@ class CTDS(SSM):
         P_A=jnp.kron(Mt_1, (L.T @ L)) #(D^2,D^2 )
         q_A = - jnp.ravel(Qtil.T @ Mdelta.T, order='F')#(D^2,)
         A_init=jnp.ravel(params.dynamics.weights, order='F')
-        A_vec=_boxCDQP(A_init,params_obj=(P_A, q_A),params_ineq=(lb,ub) )
+        A_vec=_boxCDQP.run(A_init,params_obj=(P_A, q_A),params_ineq=(lb,ub) ).params
         A= jnp.reshape(A_vec, (D,D), order='F')
         delta_A =jnp.concatenate([m_step_state.delta_A, jnp.array([jnp.linalg.norm(A - params.dynamics.weights)] )])
 
@@ -415,9 +429,12 @@ class CTDS(SSM):
         
         #---------Update C---------------------------
         Y_obs=params.observations # shape (N, T)
-        Ytil = Y_obs.T @ latent_mean
+        Ytil = (Y_obs @ latent_mean).T #(D ,N)
         C_init=params.emissions.weights
-        C=update_C_nonneg_boxcdqp(Mxx, Ytil, C_init)
+        lb,ub= create_emission_bounds(params.constraints, D, N)  #(N,D),(N,D)
+        #A_vec=_boxCDQP(A_init,params_obj=(P_A, q_A),params_ineq=(lb,ub) )
+        vmap_solver=jax.vmap(_boxCDQP.run, in_axes=(0, (None,1), (0,0))) 
+        C=vmap_solver(C_init, ( Mxx, Ytil), (lb, ub)).params
 
 
         """
@@ -450,7 +467,7 @@ class CTDS(SSM):
 
         """
         # Alternatively, estimate R as diagonal matrix with average residual variance per neuron
-        Y_pred = C @ latent_mean  # shape (N, T)
+        Y_pred = C @ latent_mean.T  # shape (N, T)
         resid = Y_obs - Y_pred  # shape (N, T)
         R_diag = jnp.mean(resid ** 2, axis=1)  # shape (N,)
         R = jnp.diag(R_diag) # shape (N, N)

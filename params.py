@@ -59,17 +59,13 @@ class ParamsCTDSEmissions(NamedTuple):
     ]
 
 
-
-
 class ParamsCTDSConstraints(NamedTuple):
     """
     Constraints for CTDS model parameters to enforce biological plausibility.
     Attributes:
-        cell_types (Array): (K, 1) array where K is number of cell types containing cell type labels.
-                            Must be a contiguous range of integers from 0 to K-1 (i.e., [0, 1, ..., K-1]) 
-                            so that cell_type_mask can be used as an index into cell_sign.
-        cell_sign (Array): (K, 1) array where K is number of cell types; values are 1 for excitatory, -1 for inhibitory.
-        cell_type_dimensions (Array): (K, 1) array where K is number of cell types containing cell type dimensions.    
+        cell_types (Array): (K, 1) array where K is number of distinct cell types. contains cell-type label per cell type
+        cell_sign (Array):  values are 1 for excitatory, -1 for inhibitory.
+        cell_type_dimensions (Array): (K, 1) number of latent dimensions assigned to each cell type    
         cell_type_mask (Array): (N, 1) #(N,) where N is number of neurons. contains cell type label for each neuron
 
     Note: cell_type_mask contains labels for each neuron not sign types. is different from dynamics.dynamics_mask. 

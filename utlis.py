@@ -3,10 +3,11 @@ import jax.numpy as jnp
 #from jaxopt import BoxOSQP
 from typing import Optional, List, Tuple
 from jaxtyping import Float, Array
-from jaxopt import BoxCDQP
+from jaxopt import BoxCDQP, BoxOSQP
 from params import SufficientStats, ParamsCTDSConstraints
 
 _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False) 
+_boxOSQP = BoxOSQP(tol=1e-8, maxiter=50000, verbose=False, primal_infeasible_tol=1e-10, dual_infeasible_tol=1e-10)
 
 #might change args to matvec functions
 #@jax.jit
@@ -94,6 +95,41 @@ def solve_constrained_QP(Q, c, mask, isExcitatory, key=jax.random.PRNGKey(0)):
 
 
 
+@jax.jit
+def jaxOpt_NNLS(Q, c, init_x):
+    """
+    Solve non-negative least squares using quadratic programming.
+
+    Solves the constrained quadratic program:
+        minimize    (1/2) * x^T Q x + c^T x
+        subject to:  x >= 0
+
+    Parameters
+    ----------
+    Q : Array, shape (D, D)
+        Positive semi-definite Hessian matrix.
+    c : Array, shape (D,)
+        Linear coefficient vector.
+    init_x : Array, shape (D,)
+        Initial solution guess.
+
+    Returns
+    -------
+    solution : Array, shape (D,)
+        Non-negative optimal solution.
+
+    Notes
+    -----
+    Uses BoxOSQP solver with non-negativity constraints.
+    Equivalent to solving min ||Ax - b||^2 s.t. x >= 0
+    where Q = A^T A and c = -A^T b.
+    """
+    lower = jnp.zeros(c.shape[0])  # Non-negative constraint
+    upper = jnp.inf * jnp.ones(c.shape[0])  # No upper bound
+    A = jnp.eye(c.shape[0])  # Identity matrix placeholder
+    init_params = _boxOSQP.init_params(init_x=init_x, params_obj=(Q, c), params_eq=A, params_ineq=(lower, upper))
+    sol = _boxOSQP.run(init_params=init_params, params_obj=(Q, c), params_eq=A, params_ineq=(lower, upper)).params.primal[0]
+    return sol
 
 #TODO: change to implementing with optax
 #@jax.jit
