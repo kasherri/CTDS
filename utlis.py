@@ -388,7 +388,7 @@ def compute_sufficient_statistics(posterior) -> SufficientStats:
         - smoothed_covariances : Array, shape (T, K, K)  
             Posterior state covariances Cov[x_t | y_{1:T}]
         - smoothed_cross_covariances : Array, shape (T-1, K, K)
-            Cross-time covariances Cov[x_t, x_{t-1} | y_{1:T}]
+            Cross-time moment E[x_t, x_{t+1} | y_{1:T}]
         - marginal_loglik : float
             Marginal log-likelihood p(y_{1:T})
 

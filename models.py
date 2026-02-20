@@ -1,5 +1,6 @@
 #from ast import Tuple
 import jax
+import chex
 from fastprogress.fastprogress import progress_bar
 from typing import Optional, Any, Callable, Tuple, Union
 from jaxtyping import Array, Float, Real
@@ -17,6 +18,7 @@ from jax.experimental.layout import DeviceLocalLayout, Layout
 _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False) 
 
 
+#TODO: Fix batched data handling
 def create_emission_bounds(constraints: ParamsCTDSConstraints, D: int, N: int) -> Tuple[Array, Array]:
     """
     Create lower and upper bounds for emission matrix C with blockwise constraints.
@@ -55,7 +57,78 @@ def create_emission_bounds(constraints: ParamsCTDSConstraints, D: int, N: int) -
     
     return lb, ub
 
+def _psd_project(M: chex.Array, floor: float) -> chex.Array:
+    """
+    Project matrix to positive semi-definite with eigenvalue floor.
+    
+    Parameters
+    ----------
+    M : Array, shape (D, D)
+        Input matrix to project.
+    floor : float
+        Minimum eigenvalue threshold.
+        
+    Returns
+    -------
+    Array, shape (D, D)
+        Projected positive semi-definite matrix.
+        
+    Notes
+    -----
+    Ensures numerical stability by flooring eigenvalues and
+    symmetrizing the matrix before eigendecomposition.
+    """
+    M = 0.5 * (M + M.T)
+    w, V = jnp.linalg.eigh(M)
+    w = jnp.maximum(w, floor)
+    return (V * w) @ V.T
 
+
+def _gauge_fix_clamped(A: chex.Array, C: chex.Array, Q: chex.Array, 
+                       smin: float = 0.3, smax: float = 3.0, 
+                       q_floor: float = 1e-6, eps: float = 1e-8) -> Tuple[chex.Array, chex.Array, chex.Array]:
+    """
+    Apply column-norm gauge fixing with clamped scales.
+    
+    Parameters
+    ----------
+    A : Array, shape (D, D)
+        Dynamics matrix.
+    C : Array, shape (N, D) 
+        Emission matrix.
+    Q : Array, shape (D, D)
+        Process noise covariance.
+    smin, smax : float
+        Min/max scale factors for gauge fixing.
+    q_floor : float
+        Eigenvalue floor for Q after scaling.
+    eps : float
+        Numerical stability constant.
+        
+    Returns
+    -------
+    A_scaled : Array, shape (D, D)
+        Gauge-fixed dynamics matrix.
+    C_scaled : Array, shape (N, D)
+        Gauge-fixed emission matrix.
+    Q_scaled : Array, shape (D, D)
+        Gauge-fixed process covariance.
+        
+    Notes
+    -----
+    Applies similarity transform to normalize column scales while
+    preserving Dale's law signs in the emission matrix.
+    """
+    # Column-norm gauge on C with clamped scales; positive diagonal S preserves Dale signs
+    s = jnp.maximum(jnp.linalg.norm(C, axis=0), eps)        # (D,)
+    s = jnp.clip(s, smin, smax)
+    S = jnp.diag(s)
+    S_inv = jnp.diag(1.0 / s)
+    A = S @ A @ S_inv
+    C = C @ S_inv
+    Q = S @ Q @ S
+    Q = _psd_project(Q, q_floor)                            # re-floor after similarity
+    return A, C, Q
 
 #maybe later implement as subclass of dynamax SSM. right now dont see a reason to do so
 class BaseCTDS(ABC):
@@ -255,8 +328,8 @@ class CTDS(SSM):
         Estimate initial parameters from observed data Y and cell-type mask.
         """
         #first check that observation has shape (N, T)
-        assert observations.shape[0] == self.emission_dim, "Observations should have shape (N, T) where N is number of neurons and T is number of time steps."
-        Y=observations  # (N, T) where N is number of neurons, T is number of time steps
+        assert observations.shape[1] == self.emission_dim, "Observations should have shape ( T, N) where N is number of neurons and T is number of time steps."
+        Y=observations.T  # ( N, T) where N is number of neurons, T is number of time steps
         
         # Create Dale mask with True for Excitatory neurons and False for Inhibitory neurons
         # Uses fancy indexing: for each neuron, it looks up the sign for that neuron's cell type.
@@ -333,9 +406,9 @@ class CTDS(SSM):
         # Average sufficient statistics across the batch
         # batch_stats is a SufficientStats object with arrays of shape (batch_size, T, ...)
         # where batch_size is the number of sequences e.g number of trials
-        latent_mean = jnp.mean(batch_stats.latent_mean, axis=0)                     # (T, K)
-        latent_second_moment = jnp.mean(batch_stats.latent_second_moment, axis=0)  # (T, K, K)
-        cross_time_moment = jnp.mean(batch_stats.cross_time_moment, axis=0)        # (T−1, K, K)
+        latent_mean = jnp.sum(batch_stats.latent_mean, axis=0)                     # (T, K)
+        latent_second_moment = jnp.sum(batch_stats.latent_second_moment, axis=0)  # (T, K, K)
+        cross_time_moment = jnp.sum(batch_stats.cross_time_moment, axis=0)        # (T−1, K, K)
         stats = SufficientStats(
             latent_mean=latent_mean,
             latent_second_moment=latent_second_moment,
@@ -350,15 +423,18 @@ class CTDS(SSM):
         R=params.emissions.cov
 
         #sufficient stats we need 
+        
         Mt_1= jnp.sum(latent_second_moment[:-1], axis=0)# (D, D)
         # Mxx = sum_{t=1}^{T} E[x_t x_t^T]
         Mxx=jnp.sum(latent_second_moment, axis=0) # (D, D) 
-        # M_Δ = sum_{t=1}^{T-1} E[x_{t+1} x_t^T]
-        Mdelta = jnp.sum(jnp.swapaxes(cross_time_moment, -1, -2), axis=0)  # (D, D)
+        # M_Δ = sum_{t=1}^{T-1} E[ x_t x_{t+1}^T]
+        Mdelta = jnp.sum(cross_time_moment, axis=0)  # (D, D)
 
 
         #------------Update A---------------------
-        #Normalizing Q for numerical stabilitu
+        #Normalizing Q for numerical stability
+        Q = (Q + Q.T) / 2.0
+        Q=Q+1e-6*jnp.eye(D)
         Qinv = jnp.linalg.inv(Q)
         alpha = jnp.max(jnp.abs(Qinv))
         Qtil = Qinv / alpha 
@@ -381,8 +457,8 @@ class CTDS(SSM):
         # Quadratic / linear terms
         # P_A = (I ⊗ L^T) (M11 ⊗ I) (I ⊗ L) = (M11 ⊗ (L^T L))
         #P_A = -2.0 * jnp.kron(Mt_1, (L.T @ L)) #multiplying by
-        P_A=jnp.kron(Mt_1, (L.T @ L)) #(D^2,D^2 )
-        q_A = - jnp.ravel(Qtil.T @ Mdelta.T, order='F')#(D^2,)
+        P_A=2.0 *jnp.kron(Mt_1, (L.T @ L)) + 1e-6 *jnp.eye(D**2) #(D^2,D^2 )
+        q_A = -2.0 *jnp.ravel(Qtil.T @ Mdelta.T, order='F')#(D^2,)
         A_init=jnp.ravel(params.dynamics.weights, order='F')
         A_vec=_boxCDQP.run(A_init,params_obj=(P_A, q_A),params_ineq=(lb,ub) ).params
         A= jnp.reshape(A_vec, (D,D), order='F')
@@ -415,26 +491,47 @@ class CTDS(SSM):
         #---------Update Q------------------------
         # Q = (1/(T-1)) * sum_{t=2}^T [E[x_t x_t^T] - A E[x_{t-1} x_t^T]^T - E[x_t x_{t-1}^T] A^T + A E[x_{t-1} x_{t-1}^T] A^T]
         #   =(1/(T-1)) * sum_{t>=2}^T [S11 - A @ S10.T - S10 @ A.T + A @ S00 @ A.T]
-        S11 = jnp.sum(stats.latent_second_moment[1:], axis=0)  #sums T-1 matrices returns (D, D) matrix
-        S10 = jnp.sum(stats.cross_time_moment, axis=0)  #sums T-1 matrices returns  shape (D, D) 
-        S00 = jnp.sum(stats.latent_second_moment[:-1], axis=0)  # shape (D, D) 
+        M2_T = jnp.sum(stats.latent_second_moment[1:], axis=0)  #sums T-1 matrices returns (D, D) matrix
 
         # Optimizing Gemm calls by reusing intermidiaries
-        AS00   = A @ S00
+        #AS00   = A @ Mt_1
+        #AS00AT = AS00 @ A.T
+        # Update dynamics matrix A via constrained QP
+        S11 = jnp.sum(stats.latent_second_moment[1:], axis=0)   # Sum over time: (D, D)
+        S10 = jnp.sum(stats.cross_time_moment, axis=0).T       # Cross-time: (D, D) 
+        S00 = jnp.sum(stats.latent_second_moment[:-1], axis=0)  # Lagged: (D, D)
+                # Update process noise Q via residual covariance
+        AS00 = A @ S00
         AS00AT = AS00 @ A.T
-        Q = (S11 - A @ S10.T - S10 @ A.T + AS00AT) / (T - 1.0)      # (D, D) 
-        delta_Q = jnp.concatenate([m_step_state.delta_Q, jnp.array([jnp.linalg.norm(Q - params.dynamics.cov)])])
+        Q_raw= (S11 - A @ S10.T - S10 @ A.T + AS00AT) / (T - 1.0)   
+        #Q_raw = (M2_T - A @ Mdelta.T - Mdelta @ A.T + A@ Mt_1 @ A.T) / (T - 1.0)      # (D, D) 
 
+        # Add regularization to ensure positive definiteness
+        reg_strength = 1e-3
+        Q = (Q_raw + Q_raw.T) / 2.0  # Symmetrize
+        Q = Q + reg_strength * jnp.eye(D)  # Add diagonal ridge
+
+        # Ensure minimum eigenvalue
+        min_eig = 1e-4
+        eigenvals = jnp.linalg.eigvalsh(Q)
+        if jnp.min(eigenvals) < min_eig:
+            Q = Q + (min_eig - jnp.min(eigenvals) + 1e-5) * jnp.eye(D)
+
+        delta_Q = jnp.concatenate([m_step_state.delta_Q, jnp.array([jnp.linalg.norm(Q - params.dynamics.cov)])])
         dynamics = ParamsCTDSDynamics(weights=A, cov=Q, dynamics_mask=params.dynamics.dynamics_mask)
+
+        delta_Q = jnp.concatenate([m_step_state.delta_Q, jnp.array([jnp.linalg.norm(Q - params.dynamics.cov)])])
         
         #---------Update C---------------------------
-        Y_obs=params.observations # shape (N, T)
-        Ytil = (Y_obs @ latent_mean).T #(D ,N)
+        Y=params.observations.T # shape (N, T)
+       
+        #Ytil = (Y_obs @ latent_mean).T #(D ,N)
         C_init=params.emissions.weights
+        Ytil = (latent_mean.T @ params.observations ).T #(N, D)
         lb,ub= create_emission_bounds(params.constraints, D, N)  #(N,D),(N,D)
         #A_vec=_boxCDQP(A_init,params_obj=(P_A, q_A),params_ineq=(lb,ub) )
         vmap_solver=jax.vmap(_boxCDQP.run, in_axes=(0, (None,1), (0,0))) 
-        C=vmap_solver(C_init, ( Mxx, Ytil), (lb, ub)).params
+        C=vmap_solver(C_init, ( 2.0 *Mxx, -2.0 *Ytil.T), (lb, ub)).params
 
 
         """
@@ -464,14 +561,30 @@ class CTDS(SSM):
         R = (YY - CExY - CExY.T + quad) / T                           # (N, N)
         emissions = ParamsCTDSEmissions(weights=C, cov=R)
         # R= (1 / T) * jnp.sum(Y_obs @ Y_obs.T - C @ Ex @ Y_obs.T - Y_obs @ Ex.T @ C.T + C @ stats.latent_second_moment @ C.T, axis=0) #shape (N, N)
-
-        """
+        
+        
         # Alternatively, estimate R as diagonal matrix with average residual variance per neuron
         Y_pred = C @ latent_mean.T  # shape (N, T)
-        resid = Y_obs - Y_pred  # shape (N, T)
+        resid = Y - Y_pred  # shape (N, T)
         R_diag = jnp.mean(resid ** 2, axis=1)  # shape (N,)
         R = jnp.diag(R_diag) # shape (N, N)
+        """
+        #Ytil = (Y @ latent_mean).T #(D ,N)
+        R_raw=(1/T) * (( Y @ Y.T)- (C @ Ytil.T) -(Ytil @ C.T) +(C @ Mxx @ C.T))
+        
+        # Regularize R to ensure positive definiteness
+        R = (R_raw + R_raw.T) / 2.0  # Symmetrize
+        R = R + 1e-4 * jnp.eye(N)  # Add ridge regularization
+
+        # Project to ensure minimum diagonal (observation noise floor)
+        R_diag = jnp.diag(R)
+        min_obs_noise = 1e-3
+        R_diag = jnp.maximum(R_diag, min_obs_noise)
+        R = R.at[jnp.diag_indices(N)].set(R_diag)
+        
         delta_R = jnp.concatenate([m_step_state.delta_R, jnp.array([jnp.linalg.norm(R - params.emissions.cov)])])
+        #A, C, _ = _gauge_fix_clamped(A, C, Q, 0.3, 3.0, 1e-6)
+        dynamics = ParamsCTDSDynamics(weights=A, cov=Q, dynamics_mask=params.dynamics.dynamics_mask)
 
         emissions = ParamsCTDSEmissions(weights=C, cov=R)
 
@@ -495,11 +608,14 @@ class CTDS(SSM):
                verbose: bool = True) -> Tuple[ParamsCTDS, jnp.ndarray]:
 
         #@jax.jit
+        T_total=jnp.sum(a=batch_emissions, axis=1)
         def em_step(params, m_step_state):
             """Perform one EM step."""
             vmap_solver=jax.vmap(DynamaxLGSSMBackend.e_step, in_axes=(None, 0, 0))  # Vectorize over batch dimension
             batch_stats, lls = vmap_solver(params,batch_emissions, batch_inputs)
-            lp = self.log_prior(params) + lls.sum()
+            #lp = self.log_prior(params) + lls.sum() #wrong unless doing MAP EM
+            lp= lls.sum()/T_total
+
             params, m_step_state = self.m_step(params, None, batch_stats, m_step_state)
 
             return params, m_step_state, lp
@@ -581,12 +697,167 @@ class NonlinearCTDS(BaseCTDS):
 
 
 
+"""
+
+# Example: 3 cell types with different numbers of neurons and latent dimensions
+cell_types = jnp.array([0, 1, 2])  # 3 cell types
+cell_sign = jnp.array([1, -1, 1])  # excitatory, inhibitory, excitatory
+cell_type_dimensions = jnp.array([3, 2, 4])  # latent dims per cell type
+cell_type_mask = jnp.array([0, 0, 0, 1, 1, 2, 2, 2, 2])  # neuron assignments
+
+constraints = ParamsCTDSConstraints(
+    cell_types=cell_types,
+    cell_sign=cell_sign,
+    cell_type_dimensions=cell_type_dimensions,
+    cell_type_mask=cell_type_mask
+)
+
+N = len(cell_type_mask)  # 9 neurons
+D = int(jnp.sum(cell_type_dimensions))  # 3 + 2 + 4 = 9 latent dims
+
+lb, ub, same_cell_type, latent_to_cell_type = create_emission_bounds(constraints, D, N)
+
+print(f"Number of neurons (N): {N}")
+print(f"Total latent dimensions (D): {D}")
+print(f"\nShape of same_cell_type: {same_cell_type.shape}")
+print(f"Shape of lb: {lb.shape}")
+print(f"Shape of ub: {ub.shape}")
+
+print(f"\nlatent_to_cell_type: {latent_to_cell_type}")
+print(f"(maps each latent dim [0-8] to its cell type [0-2])")
+
+print(f"\ncell_type_mask (neuron assignments): {cell_type_mask}")
+print(f"(maps each neuron [0-8] to its cell type [0-2])")
+
+print(f"\nsame_cell_type (boolean mask):")
+print(same_cell_type.astype(int))
+print("(1 = neuron and latent dim have same cell type, 0 = different)")
+
+print(f"\nUpper bounds (ub):")
+print(ub)
+print("(inf = non-negative constraint, 0 = forced to zero)")
+
+# Show interpretation for first few neurons
+print("\nInterpretation:")
+for i in range(min(3, N)):
+    neuron_type = cell_type_mask[i]
+    allowed_dims = jnp.where(same_cell_type[i])[0]
+    print(f"Neuron {i} (type {neuron_type}): can emit from latent dims {allowed_dims}")
 
 
 
 
 
 
+def create_dynamics_bounds_test(dynamics_mask, D):
+   
+    # Create diagonal mask (False for diagonal entries)
+    diag_masks = jnp.ravel(
+        jnp.logical_not(jnp.eye(D, dtype=jnp.bool_)), 
+        order='F'
+    )  # D^2 column-major vectorization
+    
+    # Lower bounds for off-diagonal entries
+    # inhibitory: -inf, excitatory: -1e-6
+    cell_type_lb = jnp.ravel(
+        jnp.tile(jnp.where(dynamics_mask == -1, -jnp.inf, -1e-6), (D, 1)), 
+        order='F'
+    )  # D^2 column major vectorization
+    
+    # Apply: unconstrained for diagonal, cell_type_lb for off-diagonal
+    lb = jnp.where(diag_masks, cell_type_lb, -jnp.inf)
+    
+    # Upper bounds for off-diagonal entries
+    # inhibitory: 1e-6, excitatory: inf
+    cell_type_ub = jnp.ravel(
+        jnp.tile(jnp.where(dynamics_mask == -1, 1e-6, jnp.inf), (D, 1)), 
+        order='F'
+    )  # D^2 column major vectorization
+    
+    # Apply: unconstrained for diagonal, cell_type_ub for off-diagonal
+    ub = jnp.where(diag_masks, cell_type_ub, jnp.inf)
+    
+    return lb, ub, diag_masks, cell_type_lb, cell_type_ub
 
 
+# Example: 3 cell types with excitatory and inhibitory latent dimensions
+cell_types = jnp.array([0, 1, 2])
+cell_sign = jnp.array([1, -1, 1])  # excitatory, inhibitory, excitatory
+cell_type_dimensions = jnp.array([2, 3, 2])  # 2 + 3 + 2 = 7 latent dims
 
+# Create dynamics_mask: repeats cell_sign for each latent dim
+dynamics_mask = jnp.repeat(cell_sign, cell_type_dimensions)  # (D,)
+D = int(jnp.sum(cell_type_dimensions))  # 7 latent dimensions
+
+lb, ub, diag_masks, cell_type_lb, cell_type_ub = create_dynamics_bounds_test(dynamics_mask, D)
+
+print(f"Number of latent dimensions (D): {D}")
+print(f"Total parameters in A: D^2 = {D**2}")
+print(f"\ndynamics_mask (1=excitatory, -1=inhibitory): {dynamics_mask}")
+print(f"(maps each latent dim [0-{D-1}] to its sign constraint)")
+
+print(f"\n{'='*60}")
+print("INTERMEDIATE ARRAYS")
+print(f"{'='*60}")
+
+print(f"\ndiag_masks shape: {diag_masks.shape}")
+print(f"diag_masks (False=diagonal, True=off-diagonal):")
+# Reshape to show as matrix for visualization
+diag_masks_matrix = diag_masks.reshape(D, D, order='F')
+print(diag_masks_matrix.astype(int))
+print("(0 = diagonal entry [unconstrained], 1 = off-diagonal [constrained])")
+
+print(f"\ncell_type_lb shape: {cell_type_lb.shape}")
+print(f"cell_type_lb (before applying diagonal mask):")
+cell_type_lb_matrix = cell_type_lb.reshape(D, D, order='F')
+print(cell_type_lb_matrix)
+print("(each column shows lb for that latent dim based on its sign)")
+
+print(f"\ncell_type_ub shape: {cell_type_ub.shape}")
+print(f"cell_type_ub (before applying diagonal mask):")
+cell_type_ub_matrix = cell_type_ub.reshape(D, D, order='F')
+print(cell_type_ub_matrix)
+print("(each column shows ub for that latent dim based on its sign)")
+
+print(f"\n{'='*60}")
+print("FINAL BOUNDS")
+print(f"{'='*60}")
+
+print(f"\nLower bounds (lb) shape: {lb.shape}")
+print(f"lb (column-major vectorized A):")
+lb_matrix = lb.reshape(D, D, order='F')
+print(lb_matrix)
+print("(rows: from-state, cols: to-state)")
+
+print(f"\nUpper bounds (ub) shape: {ub.shape}")
+print(f"ub (column-major vectorized A):")
+ub_matrix = ub.reshape(D, D, order='F')
+print(ub_matrix)
+print("(rows: from-state, cols: to-state)")
+
+print(f"\n{'='*60}")
+print("INTERPRETATION")
+print(f"{'='*60}")
+
+# Show interpretation for specific entries
+print("\nExample constraints for A matrix:")
+for from_dim in range(min(3, D)):
+    for to_dim in range(min(3, D)):
+        idx = to_dim * D + from_dim  # column-major index
+        is_diag = from_dim == to_dim
+        sign_label = "excitatory" if dynamics_mask[to_dim] == 1 else "inhibitory"
+        
+        if is_diag:
+            constraint = f"unconstrained [{lb[idx]:.1e}, {ub[idx]:.1e}]"
+        else:
+            constraint = f"[{lb[idx]:.1e}, {ub[idx]:.1e}]"
+        
+        print(f"A[{from_dim},{to_dim}] (to {sign_label} dim): {constraint}")
+
+print("\nKey points:")
+print("1. Diagonal entries (A[i,i]): unconstrained [-inf, inf]")
+print("2. Off-diagonal to excitatory dim (col): constrained to [-1e-6, inf] (approx non-negative)")
+print("3. Off-diagonal to inhibitory dim (col): constrained to [-inf, 1e-6] (approx non-positive)")
+print("4. This enforces Dale's law: excitatory dims have positive outputs, inhibitory have negative")
+
+"""

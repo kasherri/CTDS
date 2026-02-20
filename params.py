@@ -86,7 +86,7 @@ class ParamsCTDS(NamedTuple):
     dynamics: ParamsCTDSDynamics
     emissions: ParamsCTDSEmissions
     constraints: ParamsCTDSConstraints
-    observations: Optional[Array]  # Optional observed data for the model, e.g., spike counts or firing rates
+    observations: Optional[Array]  # Optional observed data for the model, e.g., spike counts or firing rates # (N, T)
 
 
     #TODO: include region identity for each neuron region_identity: Float[Array, "emission_dim"]  # region index for each neuron
