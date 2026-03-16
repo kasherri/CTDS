@@ -506,7 +506,7 @@ def transform_true_rec(C_true, C_rec, A_rec, Q_rec, list_of_dimensions, region_i
 
     permuted_indices = jnp.zeros(C_true.shape[1], dtype=int)
     num_cell_type = list_of_dimensions.shape[1]
-    num_regions = list_of_dimensions.shape[0]
+    num_regions = 1
     for region in range(num_regions):
         d = int(jnp.sum(list_of_dimensions[region]))
         dims_prev_regions = int(jnp.sum(list_of_dimensions[:region])) if region > 0 else 0
@@ -677,7 +677,7 @@ def create_dynamics_matrix(list_of_dimensions, D):
 
     return A
 
-def transform_true_rec(C_true, C_rec, A_rec, Q_rec, list_of_dimensions, region_identity=None):
+def transform_true_rec_Numpy(C_true, C_rec, A_rec, Q_rec, list_of_dimensions, region_identity=None):
     """ transform the recovered parameters to match the true parameters, as there are non-identifiabilities """
     # first we might want to permute the E and I latents separately for each region
     # for E and I latents corresponding to each region, we want to find the permutation that 
