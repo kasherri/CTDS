@@ -517,8 +517,8 @@ class CTDS(SSM):
         #Q update with Inverse-Wishart prior
         sqerr= S11 - A @ S10 - S10.T @ A.T + AS00AT
         v0, psi0= D+0, 1e-9 * jnp.eye(D) #hyperparmeters/priors for regularization 
-        Q= (sqerr+ psi0)/(v0+ T_total+D+1)
-        #Q=(sqerr+ psi0)/T_total
+        #Q= (sqerr+ psi0)/(v0+ T_total+D+1)
+        Q=(sqerr+ psi0)/T_total
         #Q = (Q+ Q.T) / 2.0  # Symmetrize
         
         """
@@ -549,7 +549,7 @@ class CTDS(SSM):
         #A_vec=_boxCDQP(A_init,params_obj=(P_A, q_A),params_ineq=(lb,ub) )
     
         vmap_solver=jax.vmap(_boxCDQP.run, in_axes=(0, (None,1), (0,0))) 
-        #C=vmap_solver(C, ( (2.0 *Mxx + 1e-9*jnp.eye(D)), -2.0 *Ytil), (lb, ub)).params
+        C=vmap_solver(C, ( (2.0 *Mxx + 1e-9*jnp.eye(D)), -2.0 *Ytil), (lb, ub)).params
         
         delta_C = jnp.concatenate([m_step_state.delta_C, jnp.array([jnp.linalg.norm(C - params.emissions.weights)])])
 
@@ -583,7 +583,7 @@ class CTDS(SSM):
         R_diag = jnp.diag(R1)
         min_obs_noise = 1e-4
         R_diag = jnp.maximum(R_diag, min_obs_noise)
-        #R = R.at[jnp.diag_indices(N)].set(R_diag)
+        R = R.at[jnp.diag_indices(N)].set(R_diag)
         
         
         delta_R = jnp.concatenate([m_step_state.delta_R, jnp.array([jnp.linalg.norm(R - params.emissions.cov)])])
