@@ -45,8 +45,8 @@ def compute_A_update_matrices(latent_second_moment, cross_time_moment, Q):
     L = jnp.linalg.cholesky(Qtil)
     
     # QP matrices
-    P_A = 2.0 * jnp.kron(Mt_1, (L.T @ L))
-    q_A = -2.0 * jnp.ravel(Qtil.T @ Mdelta.T, order='F')
+    P_A = 2.0 * jnp.kron( Mt_1, (L.T @ L))
+    q_A = -2.0 * jnp.ravel(Qtil.T @ Mdelta.T)
     
     return P_A, q_A, Mt_1, Mdelta
 
@@ -55,21 +55,18 @@ def create_A_bounds(dynamics_mask, D):
     """Create bounds for A update."""
     # Diagonal mask (False for diagonal)
     diag_masks = jnp.ravel(
-        jnp.logical_not(jnp.eye(D, dtype=jnp.bool_)), 
-        order='F'
+        jnp.logical_not(jnp.eye(D, dtype=jnp.bool_))
     )
     
     # Lower bounds
     cell_type_lb = jnp.ravel(
-        jnp.tile(jnp.where(dynamics_mask == -1, -jnp.inf, 1e-6), (D, 1)),
-        order='F'
+        jnp.tile(jnp.where(dynamics_mask == -1, -jnp.inf, 1e-6), (D, 1))
     )
     lb = jnp.where(diag_masks, cell_type_lb, -jnp.inf)
     
     # Upper bounds
     cell_type_ub = jnp.ravel(
-        jnp.tile(jnp.where(dynamics_mask == -1, -1e-6, jnp.inf), (D, 1)),
-        order='F'
+        jnp.tile(jnp.where(dynamics_mask == -1, -1e-6, jnp.inf), (D, 1))
     )
     ub = jnp.where(diag_masks, cell_type_ub, jnp.inf)
     
@@ -82,7 +79,7 @@ def test_A_update_kkt_conditions():
     T = 100
     
     key = jax.random.PRNGKey(42)
-    keys = jax.random.split(key, 5)
+    keys = jax.random.split(key, T)
     
     # Create dynamics mask
     dynamics_mask = jnp.array([1, 1, 1, -1, -1, -1])
@@ -96,12 +93,12 @@ def test_A_update_kkt_conditions():
     latent = latent.at[0].set(jax.random.normal(keys[1], (D,)) * 0.1)
     
     for t in range(1, T):
-        noise = jax.random.multivariate_normal(keys[2], jnp.zeros(D), Q)
+        noise = jax.random.multivariate_normal(keys[t], jnp.zeros(D), Q)
         latent = latent.at[t].set(A_true @ latent[t-1] + noise)
     
     # Compute sufficient statistics (using true latents, perfect E-step)
     latent_second_moment = jnp.einsum('ti,tj->tij', latent, latent)
-    cross_time_moment = jnp.einsum('ti,sj->tsij', latent[:-1], latent[1:])[:, 0, :, :]
+    cross_time_moment = jnp.einsum('ti,tj->tij', latent[:-1], latent[1:])
     
     # Compute QP matrices
     P_A, q_A, Mt_1, Mdelta = compute_A_update_matrices(
@@ -112,9 +109,12 @@ def test_A_update_kkt_conditions():
     lb, ub = create_A_bounds(dynamics_mask, D)
     
     # Solve QP
-    A_init = jnp.ravel(jnp.eye(D) * 0.9, order='F')
+    A_init = jnp.ravel(jnp.eye(D) * 0.9)
+    
     result = _boxCDQP.run(A_init, params_obj=(P_A, q_A), params_ineq=(lb, ub))
     A_vec = result.params
+    A= jnp.reshape(A_vec, (D,D))
+    print(A)
     
     # Check KKT conditions
     kkt_results = check_kkt_conditions(A_vec, P_A, q_A, lb, ub, tol=1e-4)
@@ -163,10 +163,10 @@ def test_A_update_satisfies_constraints():
     )
     lb, ub = create_A_bounds(dynamics_mask, D)
     
-    A_init = jnp.ravel(jnp.eye(D) * 0.8, order='F')
+    A_init = jnp.ravel(jnp.eye(D) * 0.8)
     result = _boxCDQP.run(A_init, params_obj=(P_A, q_A), params_ineq=(lb, ub))
     A_vec = result.params
-    A = jnp.reshape(A_vec, (D, D), order='F')
+    A = jnp.reshape(A_vec, (D, D))
     
 
     # Check Dale constraints
@@ -239,6 +239,86 @@ def test_A_update_orientation():
     assert inh_to_exc < 0.9, "Unexpected inhibitory to excitatory coupling"
 
 
+def test_A_update_frobenius_stability():
+    """
+    Test that the Frobenius norm of A does not blow up over 20 EM-like iterations.
+
+    Each iteration:
+      1. Simulate a latent trajectory under the current A.
+      2. Compute sufficient statistics (perfect E-step).
+      3. Solve the QP to update A (M-step A update).
+
+    Asserts:
+      - ||A||_F stays bounded (< 10 * ||A_true||_F) throughout all iterations.
+      - A never contains NaN or Inf.
+      - The spectral radius of A stays below 1.5 (does not become unstable).
+    """
+    D = 4
+    T = 200
+    N_ITERS = 20
+
+    key = jax.random.PRNGKey(0)
+    keys = jax.random.split(key, N_ITERS * (T + 5) + 10)
+    ki = 0  # running key index
+
+    dynamics_mask = jnp.array([1, 1, -1, -1])
+    A_true = generate_stable_A(D, dynamics_mask, keys[ki]); ki += 1
+    Q = jnp.eye(D) * 0.1
+
+    true_frob = float(jnp.linalg.norm(A_true, 'fro'))
+    frob_cap = 10.0 * true_frob
+
+    # Start from (slightly perturbed) true A so the test is meaningful
+    A_current = A_true + jax.random.normal(keys[ki], (D, D)) * 0.05; ki += 1
+
+    frob_history = []
+
+    for iteration in range(N_ITERS):
+        # ---- simulate latent trajectory under current A (perfect E-step) ----
+        latent = jnp.zeros((T, D))
+        latent = latent.at[0].set(jax.random.normal(keys[ki], (D,)) * 0.1); ki += 1
+
+        for t in range(1, T):
+            noise = jax.random.multivariate_normal(keys[ki], jnp.zeros(D), Q); ki += 1
+            latent = latent.at[t].set(A_current @ latent[t - 1] + noise)
+
+        # ---- sufficient statistics ----
+        latent_second_moment = jnp.einsum('ti,tj->tij', latent, latent)
+        cross_time_moment    = jnp.einsum('ti,tj->tij', latent[:-1], latent[1:])
+
+        # ---- M-step A update ----
+        P_A, q_A, _, _ = compute_A_update_matrices(
+            latent_second_moment, cross_time_moment, Q
+        )
+        lb, ub = create_A_bounds(dynamics_mask, D)
+
+        A_init = jnp.ravel(A_current)
+        result = _boxCDQP.run(A_init, params_obj=(P_A, q_A), params_ineq=(lb, ub))
+        A_current = jnp.reshape(result.params, (D, D))
+
+        frob = float(jnp.linalg.norm(A_current, 'fro'))
+        frob_history.append(frob)
+        
+
+        # Per-iteration checks
+        assert not jnp.any(jnp.isnan(A_current)), f"NaN in A at iteration {iteration}"
+        assert not jnp.any(jnp.isinf(A_current)), f"Inf in A at iteration {iteration}"
+        assert frob < frob_cap, (
+            f"Frobenius norm blew up at iteration {iteration}: "
+            f"||A||_F = {frob:.3f} > cap {frob_cap:.3f}"
+        )
+
+    spectral_radius = float(jnp.max(jnp.abs(jnp.linalg.eigvals(A_current))))
+
+    print(f"\nFrobenius norm history: {[f'{v:.3f}' for v in frob_history]}")
+    print(f"Final spectral radius: {spectral_radius:.4f}")
+    print(f"True ||A||_F: {true_frob:.4f}   Cap: {frob_cap:.4f}")
+
+    assert spectral_radius < 1.5, (
+        f"Spectral radius too large after {N_ITERS} iterations: {spectral_radius:.4f}"
+    )
+
+
 def test_A_update_with_regularization():
     """Test that A update is stable with regularized sufficient statistics."""
     D = 5
@@ -277,9 +357,9 @@ def test_A_update_with_regularization():
     cond_P = jnp.linalg.cond(P_A)
     print(f"\nCondition number of P_A: {cond_P:.2e}")
     
-    A_init = jnp.ravel(jnp.eye(D) * 0.8, order='F')
+    A_init = jnp.ravel(jnp.eye(D) * 0.8)
     result = _boxCDQP.run(A_init, params_obj=(P_A, q_A), params_ineq=(lb, ub))
-    A = jnp.reshape(result.params, (D, D), order='F')
+    A = jnp.reshape(result.params, (D, D))
     
     # Check no NaNs or Infs
     assert not jnp.any(jnp.isnan(A)), "A contains NaN"
@@ -287,3 +367,57 @@ def test_A_update_with_regularization():
     
     # Check constraints
     assert_dale_columns(A, dynamics_mask, tol=1e-5)
+
+
+def test_A_update_frobenius_stability():
+    """After 20 EM iterations, ||A|| should not blow up."""
+    import sys
+    sys.path.insert(0, '.')
+    from models import CTDS
+    
+    key = jax.random.PRNGKey(0)
+    keys = jax.random.split(key, 10)
+
+    # Small synthetic problem
+    cell_types = jnp.array([0, 1])
+    cell_sign  = jnp.array([1, -1])
+    cell_type_dimensions = jnp.array([3, 3])
+    N_per_type = 10
+    N = N_per_type * 2
+    cell_type_mask = jnp.array([0]*N_per_type + [1]*N_per_type)
+
+    model = CTDS(
+        emission_dim=N,
+        cell_types=cell_types,
+        cell_sign=cell_sign,
+        cell_type_dimensions=cell_type_dimensions,
+        cell_type_mask=cell_type_mask,
+        state_dim=6,
+    )
+
+    T = 200
+    D = 6
+    A_true = 0.7 * jnp.eye(D)
+    Q_true = 0.1 * jnp.eye(D)
+    C_true = jax.random.normal(keys[0], (N, D)) * 0.5
+    R_true = 0.1 * jnp.eye(N)
+
+    # Simulate
+    x = jnp.zeros((T, D))
+    x = x.at[0].set(jax.random.normal(keys[1], (D,)))
+    for t in range(1, T):
+        x = x.at[t].set(
+            A_true @ x[t-1] + jax.random.multivariate_normal(keys[t % 8 + 2], jnp.zeros(D), Q_true)
+        )
+    Y = (C_true @ x.T).T + jax.random.normal(keys[3], (T, N)) * 0.1
+
+    params = model.initialize(Y)
+    params, lls = model.fit_em(params, Y[None], num_iters=20, verbose=False)
+
+    A_final_norm = jnp.linalg.norm(params.dynamics.weights)
+    print(f"||A|| after 20 iters: {A_final_norm:.4f}")
+
+    # ||A|| should stay bounded — not blow up to thousands
+    assert A_final_norm < 50.0, f"||A|| blew up to {A_final_norm:.2f} — diverging EM"
+    # Log-likelihood should not be wildly worse than start
+    assert lls[-1] > lls[1] - 5.0, f"LL degraded severely: {lls[1]:.2f} → {lls[-1]:.2f}"

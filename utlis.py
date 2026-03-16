@@ -5,6 +5,7 @@ from typing import Optional, List, Tuple
 from jaxtyping import Float, Array
 from jaxopt import BoxCDQP, BoxOSQP
 from params import SufficientStats, ParamsCTDSConstraints
+import optax
 
 _boxCDQP = BoxCDQP(tol=1e-7, maxiter=10000, verbose=False) 
 _boxOSQP = BoxOSQP(tol=1e-8, maxiter=50000, verbose=False, primal_infeasible_tol=1e-10, dual_infeasible_tol=1e-10)
@@ -55,7 +56,7 @@ def solve_dale_QP(Q, c, mask):
 
 
 #@jax.jit
-def solve_constrained_QP(Q, c, mask, isExcitatory, key=jax.random.PRNGKey(0)):
+def solve_constrained_QP(Q, c, mask, isExcitatory, init_x):
     """Solve a constrained quadratic program with excitatory/inhibitory constraints.
     Args:
         Q (jnp.ndarray): Positive semi-definite matrix of shape (D, D).
@@ -73,7 +74,7 @@ def solve_constrained_QP(Q, c, mask, isExcitatory, key=jax.random.PRNGKey(0)):
         D = Q.shape[0]
         lower = jnp.where(mask, 0, -jnp.inf)
         upper = jnp.where(mask, jnp.inf, jnp.inf)
-        init_x = jax.random.normal(key, (D,))
+        #init_x = jax.random.normal(key, (D,))
         sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
         return sol.params
 
@@ -81,17 +82,17 @@ def solve_constrained_QP(Q, c, mask, isExcitatory, key=jax.random.PRNGKey(0)):
         """
         all entries are nonpositive except diagonals. True=Non-positive, False=unconstrained diagonal
         """
-        Q, c, mask, key = args
+        Q, c, mask, init_x = args
         D = Q.shape[0]
         lower = jnp.where(mask, -jnp.inf, -jnp.inf)
         upper = jnp.where(mask, 0, jnp.inf)
-        init_x = jax.random.normal(key, (D,))
+        #init_x = jax.random.normal(key, (D,))
         sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
         return sol.params
 
     return jax.lax.cond(isExcitatory, 
-                    (Q, c, mask, key), true_fn, 
-                    (Q, c, mask, key), false_fn)
+                    (Q, c, mask, init_x), true_fn, 
+                    (Q, c, mask, init_x), false_fn)
 
 
 
@@ -139,7 +140,63 @@ def NNLS(Q, c):
     init_x = jax.random.normal(jax.random.PRNGKey(42), (c.shape[0],))
     sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
     return sol.params
+@jax.jit
+def Optax_NNLS(A, b, iters: Optional[int] = 1000):
+    """
+    Solve non-negative least squares using Optax.
 
+    Solves: minimize ||Ax - b||^2 subject to x >= 0
+
+    Parameters
+    ----------
+    A : Array, shape (M, N)
+        Design matrix.
+    b : Array, shape (M,)
+        Target vector.
+    iters : int, optional
+        Maximum number of iterations (default: 1000).
+
+    Returns
+    -------
+    solution : Array, shape (N,)
+        Non-negative least squares solution.
+
+    Notes
+    -----
+    Uses Optax's built-in NNLS solver which implements
+    an active-set algorithm.
+    """
+    vec = optax.nnls(A, b, iters=iters)
+    return vec
+
+def blockwise_NNLS(Y, X, left_paddings, right_paddings, emission_dims, cell_type_dims, C_prev):
+    C_blocks=[]
+    for i in range(left_paddings.shape[0]):
+        emission_dim=emission_dims[i]
+        left_padding=left_paddings[i]
+        right_padding=right_paddings[i]
+        cell_type_dim=cell_type_dims[i]
+        #Y_type=Y[ :, emission_dim[0] : emission_dim[1]] #(T, N_type)
+        #X_type=X[:, left_padding[1] :left_padding[1]+ cell_type_dim ] #(T, D_type)
+        Y_type=Y[  left_padding[1] :left_padding[1]+ cell_type_dim, emission_dim[0] : emission_dim[1] ] #(D_type, N_type)
+        X_type=X[left_padding[1] :left_padding[1]+ cell_type_dim , left_padding[1] :left_padding[1]+ cell_type_dim ]  #(D_type, D_type)
+
+
+        #C_prev_block = C_prev[emission_dim[0] : emission_dim[1], left_padding[1] : left_padding[1] + cell_type_dim]  # shape (N, D_type)
+        #Q = X_type.T @ X_type  # shape (D_type, D_type)
+        #F = X_type.T @ Y_type  # shape (D_type, N_type)
+        
+        #Vmap over N columns of F. Each column corresponds to f= X @ y_i ∈ ℝ^D
+        #vmap_solver2 = jax.vmap(jaxOpt_NNLS, in_axes=(None, 1, 1))
+        #C = vmap_solver2(Q, F, C_prev_block.T)
+        #C_blocks.append(jnp.concatenate([jnp.zeros(left_padding), C, jnp.zeros(right_padding)], axis=1))
+
+        C_T=Optax_NNLS(X_type, Y_type)
+        C_blocks.append(jnp.concatenate([jnp.zeros(left_padding), jnp.transpose(C_T), jnp.zeros(right_padding)], axis=1))
+    
+    C = jnp.concatenate(C_blocks, axis=0)
+
+    return C
 
 """
 # Example usage:

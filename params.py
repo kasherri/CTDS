@@ -57,6 +57,9 @@ class ParamsCTDSEmissions(NamedTuple):
         Float[Array, "N"],
         ParameterProperties
     ]
+    emission_dims: Optional[Array] = None
+    left_padding_dims: Optional[Array] = None
+    right_padding_dims: Optional[Array] = None
 
 
 class ParamsCTDSConstraints(NamedTuple):
@@ -71,7 +74,7 @@ class ParamsCTDSConstraints(NamedTuple):
     Note: cell_type_mask contains labels for each neuron not sign types. is different from dynamics.dynamics_mask. 
     """
     cell_types: Array #(k,1) array where k is number of cell types containing cell type labes
-    cell_sign: Array #(k,1) array where k is number of cell types values are 1 for excitatory, -1 for inhibitory, 0 for
+    cell_sign: Array #(k,1) array where k is number of cell types values are 1 for excitatory, -1 for inhibitory, 0 for unassigned
     cell_type_dimensions: Array #(k,1) array where k is number of cell types containing cell type dimensions
     cell_type_mask: Array  #(N, 1) where N is number of neurons. contains cell type label for each neuron
     

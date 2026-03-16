@@ -76,13 +76,12 @@ def test_em_monotonicity(parameter_recovery_problem):
     # Prepare batch
     batch_obs = obs[None,:,:]  # (1, T, N)
     print(batch_obs.shape)
-    print(jnp.mean(batch_obs, axis=0).shape)
     
     # Run EM for 20 iterations
     params_final, log_probs = ctds.fit_em(
         params,
         batch_obs,
-        num_iters=20,
+        num_iters=30,
         verbose=False
     )
     

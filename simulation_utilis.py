@@ -7,6 +7,263 @@ from params import ParamsCTDSConstraints,ParamsCTDS,ParamsCTDSEmissions,ParamsCT
 from models import CTDS
 
 
+# ============================================================================
+# ASSERTIONS
+# ============================================================================
+
+def assert_psd(matrix: jnp.ndarray, name: str = "matrix", tol: float = -1e-8):
+    """Assert matrix is symmetric and positive semi-definite."""
+    assert matrix.ndim == 2, f"{name} must be 2D"
+    assert matrix.shape[0] == matrix.shape[1], f"{name} must be square"
+    
+    # Check symmetry
+    symmetric_error = jnp.max(jnp.abs(matrix - matrix.T))
+    assert symmetric_error < 1e-6, f"{name} not symmetric: max error = {symmetric_error}"
+    
+    # Check eigenvalues
+    eigenvals = jnp.linalg.eigvalsh(matrix)
+    min_eig = jnp.min(eigenvals)
+    assert min_eig >= tol, f"{name} not PSD: min eigenvalue = {min_eig}"
+
+
+def assert_dale_columns(A: jnp.ndarray, dynamics_mask: jnp.ndarray, tol: float = 1e-6):
+    """
+    Assert Dale's law constraints on A matrix.
+    
+    For each column j:
+    - If dynamics_mask[j] == 1 (excitatory): off-diagonal A[i,j] >= -tol
+    - If dynamics_mask[j] == -1 (inhibitory): off-diagonal A[i,j] <= tol
+    """
+    D = A.shape[0]
+    assert A.shape == (D, D), f"A must be square, got {A.shape}"
+    assert dynamics_mask.shape == (D,), f"dynamics_mask must have length D={D}"
+    
+    for j in range(D):
+        col = A[:, j]
+        sign = dynamics_mask[j]
+        
+        # Get off-diagonal entries
+        off_diag_mask = jnp.arange(D) != j
+        off_diag = col[off_diag_mask]
+        
+        if sign == 1:  # Excitatory
+            violations = off_diag < -tol
+            if jnp.any(violations):
+                violating_vals = off_diag[violations]
+                raise AssertionError(
+                    f"Excitatory column {j} has negative off-diagonal entries: {violating_vals}"
+                )
+        elif sign == -1:  # Inhibitory
+            violations = off_diag > tol
+            if jnp.any(violations):
+                violating_vals = off_diag[violations]
+                raise AssertionError(
+                    f"Inhibitory column {j} has positive off-diagonal entries: {violating_vals}"
+                )
+
+
+def assert_nonnegative(C: jnp.ndarray, name: str = "C", tol: float = -1e-6):
+    """Assert matrix has all non-negative entries (within tolerance)."""
+    min_val = jnp.min(C)
+    if min_val < tol:
+        violations = jnp.sum(C < tol)
+        raise AssertionError(
+            f"{name} has negative entries: min={min_val}, {violations} violations"
+        )
+
+
+def check_kkt_conditions(x: jnp.ndarray, P: jnp.ndarray, q: jnp.ndarray, 
+                         lb: jnp.ndarray, ub: jnp.ndarray, tol: float = 1e-4) -> dict:
+    """
+    Check KKT optimality conditions for box-constrained QP:
+    min 0.5 x^T P x - q^T x  s.t. lb <= x <= ub
+    
+    Returns dict with violation counts and max violations.
+    """
+    g = P @ x - q  # Gradient at solution
+    
+    # Classify variables
+    at_lower = jnp.abs(x - lb) < tol
+    at_upper = jnp.abs(x - ub) < tol
+    interior = ~at_lower & ~at_upper
+    
+    # KKT conditions:
+    # Interior: g ≈ 0
+    # At lower bound: g >= -tol (multiplier for lb is non-negative)
+    # At upper bound: g <= tol (multiplier for ub is non-negative)
+    
+    interior_violations = interior & (jnp.abs(g) > tol)
+    lower_violations = at_lower & (g < -tol)
+    upper_violations = at_upper & (g > tol)
+    
+    return {
+        'interior_count': jnp.sum(interior),
+        'interior_violations': jnp.sum(interior_violations),
+        'interior_max_error': jnp.max(jnp.where(interior, jnp.abs(g), 0.0)),
+        'lower_violations': jnp.sum(lower_violations),
+        'lower_max_error': jnp.max(jnp.where(lower_violations, -g, 0.0)),
+        'upper_violations': jnp.sum(upper_violations),
+        'upper_max_error': jnp.max(jnp.where(upper_violations, g, 0.0)),
+        'total_violations': jnp.sum(interior_violations) + jnp.sum(lower_violations) + jnp.sum(upper_violations)
+    }
+
+
+# ============================================================================
+# SYNTHETIC DATA GENERATION
+# ============================================================================
+
+def generate_stable_A(D: int, dynamics_mask: jnp.ndarray, key: jax.random.PRNGKey, 
+                     spectral_radius: float = 0.95) -> jnp.ndarray:
+    """
+    Generate stable A matrix satisfying Dale's law constraints.
+    
+    Strategy:
+    1. Generate random matrix
+    2. Apply Dale constraints column-wise
+    3. Scale to desired spectral radius
+    """
+    key1, key2 = jax.random.split(key)
+    
+    # Start with random matrix
+    A = jax.random.normal(key1, (D, D)) * 0.1
+    
+    # Apply Dale constraints column by column
+    for j in range(D):
+        if dynamics_mask[j] == 1:  # Excitatory
+            # Set off-diagonal to positive
+            off_diag_mask = jnp.arange(D) != j
+            A = A.at[off_diag_mask, j].set(jnp.abs(A[off_diag_mask, j]))
+        elif dynamics_mask[j] == -1:  # Inhibitory
+            # Set off-diagonal to negative
+            off_diag_mask = jnp.arange(D) != j
+            A = A.at[off_diag_mask, j].set(-jnp.abs(A[off_diag_mask, j]))
+    
+    # Scale to desired spectral radius
+    current_radius = jnp.max(jnp.abs(jnp.linalg.eigvals(A)))
+    if current_radius > 1e-8:
+        A = A * (spectral_radius / current_radius)
+    
+    return A
+
+
+def generate_nonnegative_C(N: int, D: int, key: jax.random.PRNGKey, 
+                          sparsity: float = 0.3) -> jnp.ndarray:
+    """Generate non-negative emission matrix with some sparsity."""
+    key1, key2 = jax.random.split(key)
+    
+    # Generate positive entries
+    C = jnp.abs(jax.random.normal(key1, (N, D))) * 0.5
+    
+    # Apply sparsity
+    mask = jax.random.bernoulli(key2, 1 - sparsity, (N, D))
+    C = C * mask
+    
+    return C
+
+
+def generate_synthetic_ssm(D: int, N: int, T: int, 
+                           cell_types: jnp.ndarray,
+                           cell_sign: jnp.ndarray,
+                           cell_type_dimensions: jnp.ndarray,
+                           cell_type_mask: jnp.ndarray,
+                           key: jax.random.PRNGKey,
+                           Q_scale: float = 10e-3,
+                           R_scale: float = 0.05) -> Tuple[ParamsCTDS, jnp.ndarray, jnp.ndarray]:
+    """
+    Generate complete synthetic SSM with data.
+    
+    Returns:
+        params: True parameters
+        latent_states: (T, D) latent trajectory
+        observations: (T, N) observations
+    """
+    keys = jax.random.split(key, 8)
+    
+    # Create dynamics mask
+    dynamics_mask = jnp.repeat(cell_sign, cell_type_dimensions)
+    
+    # Generate parameters
+    A = generate_stable_A(D, dynamics_mask, keys[0])
+    Q = jnp.eye(D) * Q_scale
+    #C = generate_nonnegative_C(N, D, keys[1])
+    R = jnp.eye(N) * R_scale
+
+    # Create emission matrix with Dale's law structure
+    keysC = jr.split(keys[2], len(cell_types))
+    C_blocks = []
+    col_start = 0
+    for i in range(len(cell_types)):
+        #get the number of neurons for this cell type
+        N_type = jnp.sum(jnp.where(cell_type_mask == cell_types[i], 1, 0))
+        D_type = cell_type_dimensions[i]
+        C_type=jr.uniform(keysC[i], (N_type, D_type), minval=0.0, maxval=1.0)
+        #C_type = generate_nonneg_matrix(keysC[i], N_type, D_type, noise=0.05, col_scale=1.0) *cell_sign[i]
+        
+        # create padded block: [zeros_left, U, zeros_right]
+        left_pad = jnp.zeros((N_type, col_start))
+        right_pad = jnp.zeros((N_type, D - col_start - D_type))
+        C_blocks.append(jnp.concatenate([left_pad, C_type, right_pad], axis=1))
+        col_start += D_type
+
+    C = jnp.concatenate(C_blocks, axis=0)
+    
+    # Initial state
+    initial_mean = jnp.zeros(D)
+    initial_cov = jnp.eye(D) * 0.1
+    
+    # Sample trajectory
+    latent_states = jnp.zeros((T, D))
+    latent_states = latent_states.at[0].set(
+        jax.random.multivariate_normal(keys[2], initial_mean, initial_cov)
+    )
+    
+    for t in range(1, T):
+        noise = jax.random.multivariate_normal(keys[3 + (t % 4)], jnp.zeros(D), Q)
+        latent_states = latent_states.at[t].set(A @ latent_states[t-1] + noise)
+    
+    # Generate observations
+    
+    observation_noise = jax.random.multivariate_normal(keys[7], jnp.zeros(N), R, (T))
+    print(C.shape, latent_states.shape, observation_noise.shape)
+    observations = (C @ latent_states.T).T + observation_noise
+   
+    ctds=CTDS(
+        emission_dim=N,
+        cell_types=cell_types,
+        cell_sign=cell_sign,
+        cell_type_dimensions=cell_type_dimensions,
+        cell_type_mask=cell_type_mask,
+        region_identity=None,
+        inputs_dim=None,
+        state_dim= D,
+    )
+    
+    
+    # Create parameter object
+    constraints = ParamsCTDSConstraints(
+        cell_types=cell_types,
+        cell_sign=cell_sign,
+        cell_type_dimensions=cell_type_dimensions,
+        cell_type_mask=cell_type_mask
+    )
+    
+    initial = ParamsCTDSInitial(mean=initial_mean, cov=initial_cov)
+    dynamics = ParamsCTDSDynamics(weights=A, cov=Q, dynamics_mask=dynamics_mask)
+    emissions = ParamsCTDSEmissions(weights=C, cov=R)
+    
+    params = ParamsCTDS(
+        initial=initial,
+        dynamics=dynamics,
+        emissions=emissions,
+        constraints=constraints,
+        observations=observations
+    )
+    latent_states, observations = ctds.sample(params, key, T)
+    #params.observations=observations
+    
+    
+    return ctds, params, latent_states, observations
+
 def generate_full_rank_matrix(key, T, N):
     """
     Generate an n x m matrix with linearly independent columns
@@ -294,4 +551,185 @@ def transform_true_rec(C_true, C_rec, A_rec, Q_rec, list_of_dimensions, region_i
     A_rec = (D_inv @ A_rec @ D_scale)
     Q_rec = (D_inv @ Q_rec @ D_inv)
 
+    return C_rec, A_rec, Q_rec
+
+
+"""
+Simulation Utilis from Aditi Jha
+"""
+import numpy as np
+from scipy.stats.stats import pearsonr  
+from sklearn.linear_model import LinearRegression
+
+
+def generate_low_rank_J(seed, N, N_e, N_i, r, diag = False):
+    # let's fix the dynamics matrix, assume some low-d structure and set it's effective dimensionality
+    # say J = UV
+    # let's ensure U has all positive elements
+    U = np.random.rand(N,r)
+    assert np.linalg.matrix_rank(U)==r, "U doesn't have the appropriate rank"
+    # now for J to have N_e positive columns and N_i negative columns, let's try the following
+    V_e = np.random.rand(r, N_e)
+    # to ensure that V_e and V_i don't have the same elements
+    np.random.seed(seed+1)
+    V_i = -np.random.rand(r, N_i)
+    V = np.hstack((V_e, V_i))
+    assert np.linalg.matrix_rank(V)==r, "V doesn't have the appropriate rank"
+    # now get J 
+    J = U@V 
+
+    if diag:
+        # put zeros on the diagonals, however then J is not low-rank anymore
+        np.fill_diagonal(J, 0)
+     
+    # scale J to ensure all eigen values lie within unit circle
+    eig_values, _ = np.linalg.eig(J)
+    spectral_radius = np.max(np.abs(eig_values))
+    J = J/(spectral_radius+0.5)
+    return J
+
+
+def create_dynamics_matrix(list_of_dimensions, D):
+    """ 
+    Creates a multi-region dynamics matrix compliant with Dale's law, and only excitatory cross-region connections.
+    
+    Parameters:
+    list_of_dimensions (numpy array): of size num_regions x 2, where the first column is 
+                                       the number of excitatory latents for the region 
+                                       and the second column is the number of inhibitory latents 
+                                       for the region.
+    
+    Returns:
+    numpy.ndarray: The dynamics matrix for the network.
+    """
+    
+    num_regions = 1
+    assert num_regions >= 1, "At least 1 region is required"
+    
+    # Initialize the size of the dynamics matrix
+    total_latents = D
+    A = np.zeros((total_latents, total_latents))
+    
+    current_index = 0
+    
+    # Create A_ii blocks (within-region dynamics)
+    for i in range(num_regions):
+        excitatory_latents, inhibitory_latents = list_of_dimensions[0],list_of_dimensions[1]
+        num_latent_per_region = excitatory_latents + inhibitory_latents
+
+        # Create the within-region dynamics matrix (A_ii)
+        A_ii = np.zeros((num_latent_per_region, num_latent_per_region))
+        
+        # Fill excitatory connections
+        A_ii[:, :excitatory_latents] = np.random.rand(num_latent_per_region, excitatory_latents)
+        # Fill inhibitory connections
+        A_ii[:, excitatory_latents:num_latent_per_region] = -np.random.rand(num_latent_per_region, inhibitory_latents)
+        
+        # Add positive biases for stabilit
+        A_ii = 0.5 * np.identity(num_latent_per_region) + 0.5 * A_ii
+        
+        # Normalize A_ii and check for NaNs or Infs
+        max_eigval = np.max(np.abs(np.linalg.eigvals(A_ii)))
+        if max_eigval != 0:
+            A_ii /= (max_eigval+0.1)  # Normalize for stability
+
+        # Place A_ii in the correct block location
+        A[current_index:current_index + num_latent_per_region,
+          current_index:current_index + num_latent_per_region] = A_ii
+        
+        current_index += num_latent_per_region
+
+
+    current_index_i = 0
+    # Create A_ij blocks (between-region dynamics)
+    for i in range(num_regions):
+        excitatory_latents_i = list_of_dimensions[0]
+        num_latent_per_region_i = np.sum(list_of_dimensions[i])
+        current_index_j = 0
+        for j in range(num_regions):
+            excitatory_latents_j = list_of_dimensions[0]
+            num_latent_per_region_j = np.sum(list_of_dimensions[0])
+            if i != j:
+                # Initialize the between-region dynamics with zeros
+                A_ij = np.zeros((num_latent_per_region_i, num_latent_per_region_j))
+                
+                # Fill only the excitatory to excitatory connections
+                A_ij[:, :excitatory_latents_j] = np.random.rand(num_latent_per_region_i, excitatory_latents_j)
+
+                # The connections along the inhibitory dimensions will remain zero, which is already the case
+                
+                # Normalize to reduce connectivity strength
+                max_val = np.max(A_ij)
+                if max_val != 0:
+                    A_ij /= (10 * max_val)  # Scale down excitatory connections
+                
+                # Place A_ij in the correct location
+                A[current_index_i :current_index_i + num_latent_per_region_i,
+                  current_index_j :current_index_j + num_latent_per_region_j] = A_ij
+            current_index_j += num_latent_per_region_j
+        
+        current_index_i += num_latent_per_region_i
+
+    # Normalize the entire dynamics matrix
+    max_eigval = np.max(np.abs(np.linalg.eigvals(A)))
+    if max_eigval != 0:
+        A /= (max_eigval+0.1)  # Normalize to keep it stable
+
+    return A
+
+def transform_true_rec(C_true, C_rec, A_rec, Q_rec, list_of_dimensions, region_identity=None):
+    """ transform the recovered parameters to match the true parameters, as there are non-identifiabilities """
+    # first we might want to permute the E and I latents separately for each region
+    # for E and I latents corresponding to each region, we want to find the permutation that 
+    # maximizes the correlation between the true and recovered latents, 
+    # let's do ths using just the C matrices
+
+    if region_identity is None:
+        region_identity = np.zeros(C_true.shape[0])
+
+    permuted_indices = np.zeros(C_true.shape[1])
+    num_cell_type = list_of_dimensions.shape[1]
+    num_regions = list_of_dimensions.shape[0]
+    for region in range(num_regions):
+        d = np.sum(list_of_dimensions[region])
+        dims_prev_regions = np.sum(list_of_dimensions[:region]) if region>0 else 0
+        neurons_this_region = np.where(region_identity == region)[0]
+        C_this_region = C_true[neurons_this_region, dims_prev_regions:dims_prev_regions+d]
+        C_rec_this_region = C_rec[neurons_this_region, dims_prev_regions:dims_prev_regions+d]
+
+        for i in range(num_cell_type): # cell types
+            d_e = list_of_dimensions[region, i]
+            if d_e == 0:
+                continue
+            else:
+                dims_prev_cell_types = np.sum(list_of_dimensions[region, :i]) if i>0 else 0
+                C_this_type = C_this_region[:, dims_prev_cell_types:dims_prev_cell_types+d_e]
+                C_rec_this_type = C_rec_this_region[:, dims_prev_cell_types:dims_prev_cell_types+d_e]
+                # now for each column of C_this_type, we want to find the column of C_rec_this_type that is most correlated with it
+                for j in range(d_e):
+                    corrs = []
+                    for k in range(d_e):
+                        corr = pearsonr(C_this_type[:, j], C_rec_this_type[:, k])[0]
+                        corrs.append(corr)
+                    best_perm = np.argmax(corrs)
+                    permuted_indices[dims_prev_regions + dims_prev_cell_types + j] = best_perm+dims_prev_regions + dims_prev_cell_types
+
+    # now permute the columns of C_rec
+    C_rec = C_rec[:, permuted_indices.astype(int)].copy()
+    A_rec = A_rec[permuted_indices.astype(int)][:, permuted_indices.astype(int)].copy()
+    Q_rec = Q_rec[permuted_indices.astype(int)][:, permuted_indices.astype(int)].copy()
+
+
+    # next there might be scaling issues, so lets scale the recovered C matrix to match the true C matrix
+    scaling_vec = np.zeros(int(np.sum(list_of_dimensions)))
+    for i in range(int(np.sum(list_of_dimensions))):
+        reg = LinearRegression().fit(C_rec[:,i].reshape(-1,1), C_true[:,i].reshape(-1,1))
+        scaling_vec[i] = reg.coef_[0][0]
+
+    D_scale = np.diag(scaling_vec)
+    D_inv = np.linalg.inv(D_scale)
+    C_rec = (C_rec@D_scale).copy()
+    A_rec = (D_inv@A_rec@D_scale).copy()
+    Q_rec = (D_inv@Q_rec@D_inv).copy()
+    
     return C_rec, A_rec, Q_rec
