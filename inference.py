@@ -4,6 +4,7 @@ import jax.numpy as jnp
 
 #TODO: ask if i can make linear_gaussian jittable
 from dynamax.linear_gaussian_ssm.inference import lgssm_smoother, lgssm_filter, lgssm_posterior_sample
+from dynamax.linear_gaussian_ssm.models import LinearGaussianSSM
 from params import ParamsCTDS
 from utlis import compute_sufficient_statistics
 import jax
@@ -114,9 +115,17 @@ class DynamaxLGSSMBackend:
         """
         Compute expected sufficient statistics and marginal log likelihood using the smoother.
         """
-        posterior = lgssm_smoother(params.to_lgssm(), emissions, inputs)
-        stats = compute_sufficient_statistics(posterior)
-        return stats,  stats.loglik
+        lggsm=LinearGaussianSSM(params.dynamics.weights.shape[0], params.emissions.weights.shape[0],0, False, False)
+        stats, loglik = lggsm.e_step(params.to_lgssm(), emissions, inputs)
+        #posterior = lgssm_smoother(params.to_lgssm(), emissions, inputs)
+        #stats = compute_sufficient_statistics(posterior, emissions)
+        #return stats,  stats.loglik
+        return stats, loglik
+    
+    @staticmethod
+    def marginal_log_prob(params, emissions, inputs=None):
+        posterior = lgssm_filter(params.to_lgssm(), emissions, inputs)
+        return posterior.marginal_loglik
 
     @staticmethod
     def filter(params: ParamsCTDS, emissions, inputs=None):

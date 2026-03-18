@@ -393,6 +393,7 @@ class CTDS(SSM):
                 - cross_time_moment: Cross-covariances between consecutive latent states (T-1, D, D)
         """
         return DynamaxLGSSMBackend.e_step(params, emissions, inputs)
+    
     def initialize_m_step_state(self, params, props: Optional[ParamsCTDS]=None):
         return M_Step_State(0, jnp.array([0.0]), jnp.array([0.0]), jnp.array([0.0]), jnp.array([0.0]))
 
@@ -415,48 +416,29 @@ class CTDS(SSM):
         Returns:
             Updated CTDS parameters and (unchanged) M-step state.   
         """
-        #TODO: add conditional to check if batch_stats has a batch dimension
-        
-        #first we make sure every parameter in batch_stats has a batch dimension even if size 1
-        assert batch_stats.latent_mean.ndim == 3, "latent_mean should have shape (batch_size, T, D). For single sequence, use shape (1, T, D)"
-        assert batch_stats.latent_second_moment.ndim == 4, "latent_second_moment should have shape (batch_size, T, D, D). For single sequence, use shape (1, T, D, D)"
-        assert batch_stats.cross_time_moment.ndim == 4, "cross_time_moment should have shape (batch_size, T-1, D, D). For single sequence, use shape (1, T-1, D, D)"
-        
-        # Average sufficient statistics across the batch
-        # batch_stats is a SufficientStats object with arrays of shape (batch_size, T, ...)
-        # where batch_size is the number of sequences e.g number of trials
-        latent_mean = jnp.sum(batch_stats.latent_mean, axis=0)                     # (T, K)
-        latent_second_moment = jnp.sum(batch_stats.latent_second_moment, axis=0)  # (T, K, K)
-        cross_time_moment = jnp.sum(batch_stats.cross_time_moment, axis=0)        # (T−1, K, K)
-        stats = SufficientStats(
-            latent_mean=latent_mean,
-            latent_second_moment=latent_second_moment,
-            cross_time_moment=cross_time_moment,
-            loglik=0.0,  # optional, unused in M-step
-            T=latent_mean.shape[0]
-        )
-        D=params.dynamics.weights.shape[0]
-        N=params.emissions.weights.shape[0]
-        T=stats.T
-        T_total=batch_stats.latent_mean.shape[0]*T
+        #Initial parms
         Q=params.dynamics.cov
         R=params.emissions.cov
         C=params.emissions.weights
         A=params.dynamics.weights
+        D=params.dynamics.weights.shape[0]
+        N=params.emissions.weights.shape[0]
+        #summing accross all batches
+        batch_stats=jax.tree_map(partial(jnp.sum, axis=0), batch_stats)
+        init_stats, dynamics_stats, emission_stats = batch_stats
 
-        #sufficient stats we need 
-        
-        Mt_1= jnp.sum(latent_second_moment[:-1], axis=0)# (D, D)
-        # Mxx = sum_{t=1}^{T} E[x_t x_t^T]
-        Mxx=jnp.sum(latent_second_moment, axis=0) # (D, D) 
-        # M_Δ = sum_{t=1}^{T-1} E[ x_t x_{t+1}^T]
-        Mdelta = jnp.sum(cross_time_moment, axis=0) # (D, D) #LGSSM
-
-
+        #Find Initalization sufficient stats
+        Sx0, S0x0T, B = init_stats #B is number of sequences in the batch
+        m = Sx0 / B 
+        S = (S0x0T / B) - jnp.outer(m, m)  
+        initial = ParamsCTDSInitial(mean=m, cov=S)
         #------------Update A---------------------
+        #Mdelta=(A@Mt_1).T #CTDS
+        Mt_1, Mdelta, M2_T, T_d= dynamics_stats #T_d=T_total-B
         #Normalizing Q for numerical stability
-        Q_init = (Q + Q.T) / 2.0
-        Q_init=Q_init+1e-6*jnp.eye(D)
+        #Q_init = (Q + Q.T) / 2.0
+        #Q_init=Q_init+1e-6*jnp.eye(D)
+        Q_init=_psd_project(Q, 1e-4) 
         Qinv = jnp.linalg.inv(Q_init)
         alpha = jnp.max(jnp.abs(Qinv))
         Qtil = Qinv / alpha 
@@ -466,8 +448,7 @@ class CTDS(SSM):
         #False for diagonal entries 
         diag_masks = jnp.ravel(jnp.logical_not(jnp.eye(D, dtype=jnp.bool_)))#D**2 column major vectorization. False
         
-        #lb for inhibitory is -jnp.inf and -1e-6 for Excitory
-        
+        #lb for inhibitory is -jnp.inf and -1e-6 for Excitory  
         cell_type_lb = jnp.ravel(jnp.tile(jnp.where(params.dynamics.dynamics_mask==-1, -jnp.inf, -1e-6),(D,1))) #D**2 column major vectorization  
         lb=jnp.where(diag_masks, cell_type_lb,-jnp.inf ) #unconstrained for diagonal entry
 
@@ -480,7 +461,6 @@ class CTDS(SSM):
         J0, m0= 1e-9 * jnp.eye(D), 0
         h0=m0*jnp.eye(D)
         P_A= 2.0* jnp.kron(Qtil,(Mt_1+J0).T) #(D^2,D^2 ) 
-
         q_A = -2.0 *jnp.ravel(Qtil.T @ Mdelta.T +h0).T#(D^2,)
         A_init=jnp.ravel(params.dynamics.weights)
         A_vec=_boxCDQP.run(A_init,params_obj=(P_A, q_A),params_ineq=(lb,ub) ).params
@@ -490,61 +470,24 @@ class CTDS(SSM):
         #---------Update Q------------------------
         # Q = (1/(T-1)) * sum_{t=2}^T [E[x_t x_t^T] - A E[x_{t-1} x_t^T]^T - E[x_t x_{t-1}^T] A^T + A E[x_{t-1} x_{t-1}^T] A^T]
         #   =(1/(T-1)) * sum_{t>=2}^T [S11 - A @ S10.T - S10 @ A.T + A @ S00 @ A.T]
-        M2_T = jnp.sum(stats.latent_second_moment[1:], axis=0)  #sums T-1 matrices returns (D, D) matrix
 
         # Optimizing Gemm calls by reusing intermidiaries
-        #AS00   = A @ Mt_1
-        #AS00AT = AS00 @ A.T
-        # Update dynamics matrix A via constrained QP
-        S11 = jnp.sum(stats.latent_second_moment[1:], axis=0)   # Sum over time: (D, D)
-        S10 = jnp.sum(stats.cross_time_moment, axis=0)       # Cross-time: (D, D) 
-        S00 = jnp.sum(stats.latent_second_moment[:-1], axis=0)  # Lagged: (D, D)
-                # Update process noise Q via residual covariance
-        """
-                # Set up constraint masks for Dale's law
-        masks = jnp.logical_not(jnp.eye(S10.shape[0], dtype=jnp.bool_))  # Off-diagonal mask
-        cell_type_mask = jnp.where(params.dynamics.dynamics_mask == -1, False, True)  # Excitatory mask
-        
-        # Solve constrained QP for each row of A 
-        vmap_solver1 = jax.vmap(solve_constrained_QP, in_axes=(None, 0, 1, 0, 1))
-        H = 2.0 * (S00 @ Qtil ) + 1e-6 * jnp.eye(S00.shape[0])  # Regularized Gram matrix
-        A_t = vmap_solver1(H, -2.0 * (Qtil.T @S10.T) , masks, cell_type_mask, params.dynamics.weights)
-        A = jnp.transpose(A_t)
-        delta_A = jnp.concatenate([m_step_state.delta_A, jnp.array([jnp.linalg.norm(A - params.dynamics.weights)])])
-        """
         AS00 = A @ Mt_1
         AS00AT = AS00 @ A.T
         #Q update with Inverse-Wishart prior
-        sqerr= S11 - A @ S10 - S10.T @ A.T + AS00AT
-        v0, psi0= D+0, 1e-9 * jnp.eye(D) #hyperparmeters/priors for regularization 
+        sqerr= M2_T - (A @ Mdelta) - (Mdelta.T @ A.T) + AS00AT
+        v0, psi0= D+0, 0* jnp.eye(D) #hyperparmeters/priors for regularization 
         #Q= (sqerr+ psi0)/(v0+ T_total+D+1)
-        Q=(sqerr+ psi0)/T_total
+        Q=(sqerr+ psi0)/(T_d)
         #Q = (Q+ Q.T) / 2.0  # Symmetrize
-        
-        """
-        Q_raw= (S11 - A @ S10.T - S10 @ A.T + AS00AT) / (T - 1.0)   
-        #Q_raw = (M2_T - A @ Mdelta.T - Mdelta @ A.T + A@ Mt_1 @ A.T) / (T - 1.0)      # (D, D) 
-
-        # Add regularization to ensure positive definiteness
-        reg_strength = 1e-3
-        Q = (Q_raw + Q_raw.T) / 2.0  # Symmetrize
-        Q = Q + reg_strength * jnp.eye(D)  # Add diagonal ridge
-
-        # Ensure minimum eigenvalue
-        min_eig = 1e-4
-        eigenvals = jnp.linalg.eigvalsh(Q)
-        if jnp.min(eigenvals) < min_eig:
-            Q = Q + (min_eig - jnp.min(eigenvals) + 1e-5) * jnp.eye(D)
-        """
-
         delta_Q = jnp.concatenate([m_step_state.delta_Q, jnp.array([jnp.linalg.norm(Q - params.dynamics.cov)])])
 
         
         #---------Update C---------------------------
         Y=params.observations.T # shape (N, T)
-       
+        Mxx, Ytil, Myy, T_total= emission_stats
         #Ytil = (Y_obs @ latent_mean).T #(D ,N)
-        Ytil=(C @ Mxx).T #shape (D, N)
+        #Ytil=(C @ Mxx).T #shape (D, N)
         lb,ub= create_emission_bounds(params.constraints, D, N)  #(N,D),(N,D)
         #A_vec=_boxCDQP(A_init,params_obj=(P_A, q_A),params_ineq=(lb,ub) )
     
@@ -575,15 +518,17 @@ class CTDS(SSM):
         R = jnp.diag(R_diag) # shape (N, N)
         """
         
-        Ytil = (Y @ latent_mean) #(N,D)
-        R1=(1/T_total) * (( (Y@Y.T) - (C @ Ytil.T) -(Ytil @ C.T) +(C @ Mxx @ C.T))+ 1e-10 * jnp.eye(N) ) #shape (N, N)
-        R1=jnp.diag(jnp.diag(R1)) #force R to be diagonal
-       
+        R1=(1/T_total) * (( (Myy) - (C @ Ytil) -(Ytil.T @ C.T) +(C @ Mxx @ C.T)) ) #shape (N, N)
+        R=jnp.diag(jnp.diag(R1)) #force R to be diagonal
+        
+        """
         # Project to ensure minimum diagonal (observation noise floor)
         R_diag = jnp.diag(R1)
         min_obs_noise = 1e-4
         R_diag = jnp.maximum(R_diag, min_obs_noise)
         R = R.at[jnp.diag_indices(N)].set(R_diag)
+        """
+    
         
         
         delta_R = jnp.concatenate([m_step_state.delta_R, jnp.array([jnp.linalg.norm(R - params.emissions.cov)])])
@@ -604,13 +549,7 @@ class CTDS(SSM):
         print("||R||", jnp.linalg.norm(R))
         print("min eig Q", jnp.min(jnp.linalg.eigvalsh(Q)))
         print("min eig R", jnp.min(jnp.linalg.eigvalsh(R)))
-        #---------Update initial state-----------------
-        # Initial state mean is the first latent mean
-        initial_mean = stats.latent_mean[0]  # shape (D,)
-        # Initial state covariance is the first latent covariance
-        initial_cov = stats.latent_second_moment[0]  # shape (D,)
 
-        initial = ParamsCTDSInitial(mean=initial_mean, cov=initial_cov)
         iter=m_step_state.iteration + 1
         return ParamsCTDS(initial, dynamics, emissions, constraints=params.constraints, observations=params.observations),  M_Step_State(iter, delta_A, delta_C, delta_Q, delta_R)
 
@@ -624,14 +563,15 @@ class CTDS(SSM):
                verbose: bool = True) -> Tuple[ParamsCTDS, jnp.ndarray]:
 
         T_total = batch_emissions.shape[0] * batch_emissions.shape[1]  # for now asssuming every batch has the same number of Time points
+        #@jax.jit
         def em_step(params, m_step_state):
             """Perform one EM step."""
-            vmap_solver=jax.vmap(DynamaxLGSSMBackend.e_step, in_axes=(None, 0, 0))  # Vectorize over batch dimension
-            batch_stats, lls = vmap_solver(params,batch_emissions, batch_inputs)
+            #vmap_solver=jax.vmap(DynamaxLGSSMBackend.e_step, in_axes=(None, 0, 0))  # Vectorize over batch dimension
+            #batch_stats, lls = vmap_solver(params,batch_emissions, batch_inputs)
             #lp = (self.log_prior(params)+ jnp.sum(lls,0))/T_total #wrong unless doing MAP EM
             #lp= jnp.sum(lls,0)/T_total
-            lp= self.log_prior(params)+jnp.sum(lls,0) #total log-likelihood across all sequences (not averaged)
-
+            batch_stats, lls = jax.vmap(partial(self.e_step, params))(batch_emissions, batch_inputs)
+            lp = self.log_prior(params) + lls.sum() #total log-likelihood across all sequences (not averaged)
             params, m_step_state = self.m_step(params, None, batch_stats, m_step_state)
             return params, m_step_state, lp
 
@@ -709,7 +649,8 @@ class CTDS(SSM):
         return DynamaxLGSSMBackend.smoother(params, emissions, inputs)
 
     def marginal_log_prob(self, params, emissions, inputs=None):
-        return super().marginal_log_prob(params, emissions, inputs)
+        return DynamaxLGSSMBackend.marginal_log_prob(params, emissions)
+
     
     
     #def sample

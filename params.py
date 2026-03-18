@@ -169,3 +169,10 @@ class SufficientStats(NamedTuple):
     cross_time_moment: jnp.ndarray      # shape (T-1, K, K)  - E[x_t x_{t-1}^T]
     loglik: float               # scalar             - marginal log-likelihood
     T: int                      # number of time steps
+    Mxx: jnp.ndarray            # shape (K, K)       - sum over time of E[x_t x_t^T]
+    Mdelta: jnp.ndarray         # shape (K, K)       - sum over time of E[x_t x_{t-1}^T]
+    Mt_1: jnp.ndarray           # shape (K, K) 
+    M2_T:jnp.ndarray            # shape (K, K) 
+    Ytil: jnp.ndarray          # shape (N, K)       - sum over time of y_t E[x_t]^T
+
+

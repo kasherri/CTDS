@@ -268,7 +268,6 @@ def blockwise_NMF(J, cell_constraints:ParamsCTDSConstraints):
     cell_types = cell_constraints.cell_types
     cell_type_dimensions = cell_constraints.cell_type_dimensions
     cell_type_mask = cell_constraints.cell_type_mask 
-    
     N = J_plus.shape[0]
     num_cell_types = len(cell_types)
 
@@ -429,7 +428,7 @@ def NMF(U_init, V_init, J, max_iterations=1000, relative_error=1e-4):
     _, U_final, V_final = final_state
     return U_final, V_final
 
-def compute_sufficient_statistics(posterior) -> SufficientStats:
+def compute_sufficient_statistics(posterior, emissions) -> SufficientStats:
     """
     Compute sufficient statistics from smoothed posterior for EM algorithm.
 
@@ -478,14 +477,25 @@ def compute_sufficient_statistics(posterior) -> SufficientStats:
 
     # E[x_t x_t^T] = smoothed_covariances + outer(smoothed_means, smoothed_means)
     ExxT = Sigma + jnp.einsum("ti,tj->tij", mu, mu)
+    Mxx=jnp.sum(ExxT, axis=0) # (K, K) sum over time of E[x_t x_t^T]
+    Mdelta = jnp.sum(cross, axis=0) # (K, K) sum over time of E[x_t x_{t-1}^T]
+    Ytil=emissions.T @ mu # (N, K) sum over time of y_t E[x_t]^T
+    Mt_1=jnp.sum(ExxT[-1,:,:], axis=0)
+    M2_T=jnp.sum(ExxT[1:,:,:], axis=0)
+
 
     return SufficientStats(
         latent_mean=mu,
         latent_second_moment=ExxT,
         cross_time_moment=cross,
         loglik=jnp.array(posterior.marginal_loglik, float),
-        T=mu.shape[0]
-    )
+        T=emissions.shape[0],
+        Mxx=Mxx,
+        Mdelta=Mdelta,
+        Mt_1=Mt_1,
+        M2_T=M2_T,
+        Ytil=Ytil)
+    
 
 
 #TO DO: Multiregion estimate_J
