@@ -121,25 +121,19 @@ def jaxOpt_NNLS(Q, c, init_x):
 
     Notes
     -----
-    Uses BoxOSQP solver with non-negativity constraints.
+    Uses BoxCDQP solver with non-negativity constraints.
     Equivalent to solving min ||Ax - b||^2 s.t. x >= 0
     where Q = A^T A and c = -A^T b.
     """
     lower = jnp.zeros(c.shape[0])  # Non-negative constraint
     upper = jnp.inf * jnp.ones(c.shape[0])  # No upper bound
-    A = jnp.eye(c.shape[0])  # Identity matrix placeholder
-    init_params = _boxOSQP.init_params(init_x=init_x, params_obj=(Q, c), params_eq=A, params_ineq=(lower, upper))
-    sol = _boxOSQP.run(init_params=init_params, params_obj=(Q, c), params_eq=A, params_ineq=(lower, upper)).params.primal[0]
+    #A = jnp.eye(c.shape[0])  # Identity matrix placeholder
+    #init_params = _boxOSQP.init_params(init_x=init_x, params_obj=(Q, c), params_eq=A, params_ineq=(lower, upper))
+    #sol = _boxOSQP.run(init_params=init_params, params_obj=(Q, c), params_eq=A, params_ineq=(lower, upper)).params.primal[0]
+    sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper)).params
     return sol
 
-#TODO: change to implementing with optax
-#@jax.jit
-def NNLS(Q, c):
-    lower = jnp.zeros(c.shape[0])  # Non-negative constraint
-    upper = jnp.inf * jnp.ones(c.shape[0])  # No upper bound
-    init_x = jax.random.normal(jax.random.PRNGKey(42), (c.shape[0],))
-    sol = _boxCDQP.run(init_x, params_obj=(Q, c), params_ineq=(lower, upper))
-    return sol.params
+
 @jax.jit
 def Optax_NNLS(A, b, iters: Optional[int] = 1000):
     """
@@ -549,3 +543,276 @@ def is_positive_semidefinite(Q: jnp.ndarray) -> bool:
     """
     eigs = jnp.linalg.eigvalsh(Q)
     return jnp.all(eigs >= -1e-10)
+
+
+def _fit_A_from_pairs(
+    X_prev: jnp.ndarray,       # (M, D)
+    X_next: jnp.ndarray,       # (M, D)
+    dynamics_mask: jnp.ndarray, # (D,)
+    ridge: float = 1e-5,
+) -> jnp.ndarray:
+    """
+    Fit A: (D, D) from pairs (X_prev, X_next) then project to Dale cone.
+
+    LS:   A.T = (X_prev.T X_prev + ridge I)^{-1} X_prev.T X_next   → A.T is (D,D)
+    Dale: project off-diagonal signs per column.
+    Scale spectral radius to 0.95.
+
+    Returns: (D, D).
+    """
+    D = X_prev.shape[1]
+    XtX = X_prev.T @ X_prev + ridge * jnp.eye(D)    # (D, D)
+    XtXnext = X_prev.T @ X_next                      # (D, D)
+    A_T = jnp.linalg.solve(XtX, XtXnext)             # A.T : (D, D)
+    A = A_T.T
+
+    A = _project_A_dale(A, dynamics_mask)
+
+    sr = jnp.max(jnp.abs(jnp.linalg.eigvals(A)))
+    A = jnp.where(sr > 1e-8, A * (0.95 / (sr + 1e-8)), A)
+    return A
+
+
+def _fit_Q_from_pairs(
+    X_prev: jnp.ndarray,   # (M, D)
+    X_next: jnp.ndarray,   # (M, D)
+    A: jnp.ndarray,        # (D, D)
+    ridge: float = 1e-5,
+) -> jnp.ndarray:
+    """
+    Compute Q from residual covariance.
+
+    resid = X_next - (A @ X_prev.T).T     (M, D)
+    Q     = resid.T @ resid / M  +  ridge I
+
+    Returns: (D, D) PSD.
+    """
+    resid = X_next - (A @ X_prev.T).T     # (M, D)
+    Q_raw = resid.T @ resid / resid.shape[0] + ridge * jnp.eye(A.shape[0])
+    return _psd_project(Q_raw, floor=ridge)
+
+#Functions for Initilization
+def single_PCA(Y_n, d_n):
+    # Y shape is ( N_type, T)
+    U_n,S_n,V_n=jnp.linalg.svd(Y_n, full_matrices=False)
+    C_n=U_n[:,:d_n] #( N_type,D_type)
+    X_n=S_n[:d_n, None]*V_n[:d_n, :] #(D_type, T)
+    return C_n, X_n.T
+
+def Blockwise_PCA(Y, cell_type_dimensions, cell_type_mask,cell_types):
+    #Y shape (N,T)
+    N=Y.shape[0]
+    C_blocks=[]
+    X_blocks=[]
+    Y_blocks=[]
+
+    # using for loop since number of cell types is small and fixed
+    for i, cell_type in enumerate(cell_types):
+        # get all the indices for this cell type
+        idx_type = jnp.nonzero(jnp.where(cell_type_mask == cell_type, 1, 0))[0] # (N_type) array of indices where cell_type_mask matches current cell type
+        
+        
+        Y_type = jnp.take(Y, idx_type, axis=0)  # shape: (N_type, T)
+        
+        N_type = Y_type.shape[0]
+        D_type = int(cell_type_dimensions[i])
+
+        C_type,X_type=single_PCA(Y_type, D_type)
+        C_blocks.append(C_type)
+        X_blocks.append(X_type)
+        Y_blocks.append(Y_type.T)
+    
+    return jnp.array(C_blocks), jnp.array(X_blocks), jnp.array(Y_blocks)
+
+
+
+def _symmetrize(M: jnp.ndarray) -> jnp.ndarray:
+    """Force matrix to be symmetric: (M + M.T) / 2."""
+    return 0.5 * (M + M.T)
+
+
+def _psd_project(M: jnp.ndarray, floor: float = 1e-6) -> jnp.ndarray:
+    """
+    Project (D, D) matrix to PSD via eigenvalue flooring.
+
+    Returns: (D, D) symmetric PSD matrix.
+    """
+    M = _symmetrize(M)
+    w, V = jnp.linalg.eigh(M)          # w: (D,), V: (D,D)
+    w = jnp.maximum(w, floor)
+    return (V * w) @ V.T               # (D, D)
+
+
+def _project_A_dale(
+    A: jnp.ndarray,                    # (D, D)
+    dynamics_mask: jnp.ndarray,        # (D,)  +1 excitatory, -1 inhibitory
+    eps: float = 1e-6,
+) -> jnp.ndarray:
+    """
+    Project A to satisfy CTDS Dale's law (column-wise sign constraints).
+
+    Off-diagonal column j:
+        dynamics_mask[j] == +1  →  A[i,j] >= 0   (excitatory column)
+        dynamics_mask[j] == -1  →  A[i,j] <= 0   (inhibitory column)
+    Diagonal entries are left unconstrained.
+
+    Args:
+        A             : (D, D) raw dynamics matrix.
+        dynamics_mask : (D,)   +1 or -1 per latent dim.
+        eps           : small non-negative slack kept for off-diag constraint.
+
+    Returns: (D, D) projected dynamics matrix.
+    """
+    D = A.shape[0]
+    diag_mask = jnp.eye(D, dtype=bool)   # (D, D)  True on diagonal
+
+    # For each column j, off-diagonal entries must have sign dynamics_mask[j].
+    # excitatory (mask==+1): clamp negative off-diag values to 0
+    # inhibitory (mask==-1): clamp positive off-diag values to 0
+    col_signs = dynamics_mask[None, :]   # (1, D)  broadcast over rows
+
+    # off-diagonal excitatory: max(A, 0)
+    A_exc = jnp.maximum(A, 0.0)
+    # off-diagonal inhibitory: min(A, 0)
+    A_inh = jnp.minimum(A, 0.0)
+
+    A_constrained = jnp.where(col_signs == 1, A_exc, A_inh)   # (D, D)
+
+    # Restore unconstrained diagonal
+    A_out = jnp.where(diag_mask, A, A_constrained)
+    return A_out
+
+
+def _normalize_latents(
+    X_flat: jnp.ndarray,   # (BT, D)
+    C: jnp.ndarray,        # (N, D)
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Normalise each latent dim to unit variance; rescale C accordingly.
+
+    scale[d] = std(X_flat[:, d]) + eps
+    X_norm   = X_flat / scale             (BT, D)
+    C_norm   = C * scale                  (N, D)  — preserves C x = C_norm x_norm
+
+    Returns: X_norm (BT, D), C_norm (N, D).
+    """
+    scale = jnp.std(X_flat, axis=0) + 1e-8   # (D,)
+    X_norm = X_flat / scale[None, :]
+    C_norm = C * scale[None, :]
+    return X_norm, C_norm
+def update_C_block(X, Y):
+    """
+    X: (TB, D)
+    Y: (TB, N)
+    """
+    C= Optax_NNLS(X,Y) #(D, N)
+    return C.T
+
+def update_X_block(C, Y):
+    X = jnp.linalg.lstsq(C, Y.T)[0].T  # ( T, D)
+    X,C=_normalize_latents(X,C)
+    return X,C
+
+def init_emissions(iters, C_list, X_list, Y_list):
+    def body_fun(i, params):
+        C_list, X_list=params
+        C_list=jax.vmap(update_C_block, in_axes=(0,0))(X_list, Y_list)
+        X_list, C_list=jax.vmap(update_X_block, in_axes=(0,0))(C_list, Y_list)
+        return C_list, X_list
+
+    init = (C_list, X_list)  # initial carry
+    C_final, X_final = jax.lax.fori_loop(0, iters, body_fun, init)
+    return C_final, X_final
+
+
+
+def pad_C(C_list, state_dim):
+    C_blocks=[]
+    col_start = 0
+    emission_dims = []
+    left_padding_dims = []
+    right_padding_dims = []
+    emiss_start = 0
+    
+    for C in C_list:
+        N_type, K_type = C.shape
+        
+        # Create padded block: [zeros_left, U, zeros_right]
+        left_pad = jnp.zeros((N_type, col_start))
+        right_pad = jnp.zeros((N_type, state_dim - col_start - K_type))
+        
+        left_padding_dims.append(left_pad.shape)
+        right_padding_dims.append(right_pad.shape)
+
+        C_block = jnp.concatenate([left_pad, C, right_pad], axis=1)
+        C_blocks.append(C_block)
+
+        emission_dims.append((emiss_start, emiss_start + N_type))
+
+        emiss_start += N_type
+     
+        # Concatenate vertically to form complete emission matrix
+    
+    C = jnp.concatenate(C_blocks, axis=0)  # Shape: (N, D)
+
+    return C, emission_dims, left_padding_dims, right_padding_dims
+from typing import Tuple, Dict
+def pca_initialize_ctds(
+    Y: jnp.ndarray,                     # (B, T, N)
+    e_mask: jnp.ndarray,                # (N,) bool
+    i_mask: jnp.ndarray,                # (N,) bool
+    D: jnp.ndarray,
+    cell_types: jnp.ndarray,            # (K,)
+    cell_sign: jnp.ndarray,             # (K,)
+    cell_type_dimensions: jnp.ndarray,  # (K,)
+    cell_type_mask: jnp.ndarray,        # (N,)
+    key: jax.random.PRNGKey = jax.random.PRNGKey(0),
+    pgd_iters: int = 400,
+    pgd_ridge: float = 1e-4,
+) -> Dict[str, jnp.ndarray]:
+    """
+    PCA-based CTDS initialization.
+
+    Args:
+        Y                   : (B, T, N)
+        e_mask              : (N,) bool
+        i_mask              : (N,) bool
+        D_e                 : int
+        D_i                 : int
+        cell_types          : (K,)
+        cell_sign           : (K,)
+        cell_type_dimensions: (K,)
+        cell_type_mask      : (N,)
+        key                 : PRNG key (used only for PGD init)
+        pgd_iters           : PGD iters for C regression
+        pgd_ridge           : ridge for XtX
+
+    Returns dict with keys:
+        X0 (B,T,D), C0 (N,D), d0 (N,), R0 (N,), A0 (D,D), Q0 (D,D)
+    """
+    B, T, N = Y.shape
+    # ---- Step 1: Preprocess ----
+    Y_flat = Y.reshape(B * T, N)          # (BT, N)
+    d0 = jnp.mean(Y_flat, axis=0)         # (N,)
+    Y_centered = Y_flat - d0[None, :]     # (BT, N)
+
+    C_list, X_list, Y_list=Blockwise_PCA(Y_centered.T, cell_type_dimensions, cell_type_mask,cell_types)
+    C_list, X_list= init_emissions(1000, C_list, X_list, Y_list)
+    C0, emission_dims, left_padding_dims, right_padding_dims=pad_C(C_list, D)
+    X_flat_norm=X_list.reshape(-1, D)
+
+    # ---- Step 5: R from residual variance ----
+    Y_pred = (C0 @ X_flat_norm.T).T      # (BT, N)
+    resid_Y = Y_centered - Y_pred        # (BT, N)
+    R0 = jnp.mean(resid_Y ** 2, axis=0) + 1e-6    # (N,)
+
+    # ---- Step 6: A and Q ----
+    X0 = X_flat_norm.reshape(B, T, D)
+    dynamics_mask = jnp.repeat(cell_sign, cell_type_dimensions)   # (D,)
+    X_prev_list = X0[:, :-1, :].reshape(B * (T - 1), D)
+    X_next_list = X0[:, 1:, :].reshape(B * (T - 1), D)
+
+    A0 = _fit_A_from_pairs(X_prev_list, X_next_list, dynamics_mask)
+    Q0 = _fit_Q_from_pairs(X_prev_list, X_next_list, A0)
+
+    return dict(X0=X0, C0=C0, d0=d0, R0=R0, A0=A0, Q0=Q0)

@@ -167,8 +167,8 @@ def generate_synthetic_ssm(D: int, N: int, T: int,
                            cell_type_dimensions: jnp.ndarray,
                            cell_type_mask: jnp.ndarray,
                            key: jax.random.PRNGKey,
-                           Q_scale: float = 10e-3,
-                           R_scale: float = 0.05) -> Tuple[ParamsCTDS, jnp.ndarray, jnp.ndarray]:
+                           Q_scale: float = 1e-2,
+                           R_scale: float = 1e-3) -> Tuple[ParamsCTDS, jnp.ndarray, jnp.ndarray]:
     """
     Generate complete synthetic SSM with data.
     
@@ -183,10 +183,14 @@ def generate_synthetic_ssm(D: int, N: int, T: int,
     dynamics_mask = jnp.repeat(cell_sign, cell_type_dimensions)
     
     # Generate parameters
-    A = generate_stable_A(D, dynamics_mask, keys[0])
-    Q = jnp.eye(D) * Q_scale
+    #A =jnp.array(create_dynamics_matrix(cell_type_dimensions, D))
+    A=make_A_true(key[0], cell_type_dimensions, cell_sign, target_cond=10.0, spectral_radius=0.95)
+    Q=jr.normal(keys[1], (D, D))
+    Q = Q.T@Q + jnp.identity(D)
+    Q=Q/(jnp.max(Q)*1000)
+    Q=make_Q_true(key[1], D, target_cond=5.0, scale=6e-3)
     #C = generate_nonnegative_C(N, D, keys[1])
-    R = jnp.eye(N) * R_scale
+    R = jnp.array(np.diag(np.random.rand( N) + 0.1)/1000)
 
     # Create emission matrix with Dale's law structure
     keysC = jr.split(keys[2], len(cell_types))
@@ -246,10 +250,11 @@ def generate_synthetic_ssm(D: int, N: int, T: int,
         cell_type_dimensions=cell_type_dimensions,
         cell_type_mask=cell_type_mask
     )
+    bias=jnp.zeros(N)
     
     initial = ParamsCTDSInitial(mean=initial_mean, cov=initial_cov)
     dynamics = ParamsCTDSDynamics(weights=A, cov=Q, dynamics_mask=dynamics_mask)
-    emissions = ParamsCTDSEmissions(weights=C, cov=R)
+    emissions = ParamsCTDSEmissions(weights=C, cov=R, bias=bias)
     
     params = ParamsCTDS(
         initial=initial,
@@ -357,34 +362,9 @@ def generate_CTDS_Params(
     for i in range(K):
         dynamics_list.append(jnp.full(cell_type_dimensions[i], cell_sign[i]))
     dynamics_mask = jnp.concatenate(dynamics_list)
-    """
-    # Create stable dynamics matrix
-    #A_raw = jr.normal(keys[1], (D, D)) * 0.3
-    A_raw = generate_nonneg_matrix(keys[1], D, D)
-    eigenvals, eigenvecs = jnp.linalg.eig(A_raw)
-    eigenvals_scaled = eigenvals * (dynamics_strength / jnp.max(jnp.abs(eigenvals)))
-    A = jnp.real(eigenvecs @ jnp.diag(eigenvals_scaled) @ jnp.linalg.inv(eigenvecs))
-    A=jnp.abs(A)  # Ensure non-negative dynamics
-    # Apply Dale's law to dynamics matrix
-    for i in range(D):
-        latent_type = dynamics_mask[i]
-        for j in range(D):
-            if i != j:  # Skip self-connections
-                A = A.at[j,i].set(A[j,i] * latent_type)
-    """
-    #A=generate_nonneg_matrix(keys[1], D, D)  # Ensure non-negative dynamics
-    A=jr.uniform(keys[1], (D, D), minval=0.0, maxval=1.0) 
-    # Apply Dale's law to dynamics matrix
-    for i in range(D):
-        latent_type = dynamics_mask[i]
-        for j in range(D):
-            if i != j:  # Skip self-connections
-                A = A.at[j,i].set(A[j,i] * latent_type)
     
-    #A=0.5 * jnp.eye(D) + 0.5 * A  # Add positive bias for stability
-    max_eigval = jnp.max(jnp.abs(jnp.linalg.eigvals(A)))
-    if max_eigval != 0:
-        A = A / max_eigval  
+    #A=generate_nonneg_matrix(keys[1], D, D)  # Ensure non-negative dynamics
+    A= make_A_true(keys[1], cell_type_dimensions, cell_sign, target_cond=10.0, spectral_radius=0.95) 
 
     # Create emission matrix with Dale's law structure
     keysC = jr.split(keys[2], len(cell_types))
@@ -394,9 +374,7 @@ def generate_CTDS_Params(
         #get the number of neurons for this cell type
         N_type = jnp.sum(jnp.where(cell_type_mask == cell_types[i], 1, 0))
         D_type = cell_type_dimensions[i]
-        C_type=jr.uniform(keysC[i], (N_type, D_type), minval=0.0, maxval=1.0)
-        #C_type = generate_nonneg_matrix(keysC[i], N_type, D_type, noise=0.05, col_scale=1.0) *cell_sign[i]
-        
+        C_type=jr.uniform(keysC[i], (N_type, D_type), minval=0.0, maxval=1.0)        
         # create padded block: [zeros_left, U, zeros_right]
         left_pad = jnp.zeros((N_type, col_start))
         right_pad = jnp.zeros((N_type, D - col_start - D_type))
@@ -416,9 +394,10 @@ def generate_CTDS_Params(
     Q=jr.normal(keys[3], (D, D))
     Q = Q.T@Q + jnp.identity(D)
     Q=Q/(jnp.max(Q)*1000)
+    Q = make_Q_true(keys[2], D, target_cond=8.0, scale=6e-3)
 
 
-    emissions=ParamsCTDSEmissions(weights=C, cov=R)
+    emissions=ParamsCTDSEmissions(weights=C, cov=R, bias=jnp.zeros(N))
     dynamics=ParamsCTDSDynamics(weights=A, cov=Q, dynamics_mask=dynamics_mask)
     initial=ParamsCTDSInitial(mean=jnp.zeros(D), cov=jnp.eye(D) * 0.1)
     # Create constraints object
@@ -490,6 +469,66 @@ def generate_synthetic_data(
 
     return states, observations, ctds, ctds_params
 
+
+def make_A_true(key, cell_type_dimensions, cell_sign, target_cond=10.0, spectral_radius=0.95):
+    """
+    Build a Dale-compliant A with controlled condition number.
+    
+    Column j of A has sign = cell_sign of the cell type that owns dim j:
+      - Excitatory columns: off-diagonal entries >= 0
+      - Inhibitory columns: off-diagonal entries <= 0
+      - Diagonal: unconstrained (controls stability)
+    """
+    D = int(jnp.sum(cell_type_dimensions))
+    col_sign = jnp.repeat(cell_sign, cell_type_dimensions)  # (D,)
+    
+    k1, k2 = jr.split(key)
+    
+    # Step 1: Generate non-negative off-diagonal entries
+    # Draw from Uniform, then apply column signs for Dale's law
+    off_diag = jr.uniform(k1, (D, D), minval=1e-2, maxval=1.0)
+    off_diag = off_diag * col_sign[None, :]   # apply sign per column
+    off_diag = off_diag.at[jnp.diag_indices(D)].set(0.0)  # clear diagonal
+    
+    # Step 2: Set diagonal to control eigenvalues
+    # Start with negative diagonal (stable) scaled to balance off-diagonal
+    row_abs_sum = jnp.sum(jnp.abs(off_diag), axis=1)
+    diag_vals = 0.8 * row_abs_sum  # Gershgorin: keeps eigenvalues left of 0.8*row_sum
+    A = off_diag + jnp.diag(diag_vals)
+    
+    # Step 3: Control condition number via SVD projection
+    U, s, Vt = jnp.linalg.svd(A)
+    # Compress singular values to target range
+    s_new = jnp.linspace(s[0], s[0] / target_cond, D)
+    A_proj = U @ jnp.diag(s_new) @ Vt
+    
+    # Step 4: Re-enforce Dale signs (SVD projection may violate them slightly)
+    # Off-diagonal: project back to correct sign
+    diag_A = jnp.diag(A_proj)
+    off_diag_proj = A_proj - jnp.diag(diag_A)
+    # E columns (col_sign=1): clamp off-diag to >= 0
+    # I columns (col_sign=-1): clamp off-diag to <= 0
+    off_diag_proj = jnp.where(col_sign[None, :] == 1,
+                               jnp.maximum(off_diag_proj, 0.0),
+                               jnp.minimum(off_diag_proj, 0.0))
+    A_dale = off_diag_proj + jnp.diag(diag_A)
+    
+    # Step 5: Scale spectral radius
+    sr = jnp.max(jnp.abs(jnp.linalg.eigvals(A_dale)))
+    A_dale = A_dale * (spectral_radius / jnp.maximum(sr, 1e-3))
+  
+    
+    return A_dale
+
+
+def make_Q_true(key, D, target_cond=5.0, scale=1e-3):
+    """Q with controlled condition number. Scale sets the magnitude."""
+    Q_orth, _ = jnp.linalg.qr(jr.normal(key, (D, D)))
+    eig_max = scale
+    eig_min = scale / target_cond
+    eigs = jnp.linspace(eig_max, eig_min, D)
+    Q = Q_orth @ jnp.diag(eigs) @ Q_orth.T
+    return (Q + Q.T) / 2  # enforce exact symmetry
 
 
 
