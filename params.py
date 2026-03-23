@@ -57,6 +57,7 @@ class ParamsCTDSEmissions(NamedTuple):
         Float[Array, "N"],
         ParameterProperties
     ]
+    bias: Union[Float[Array, "N"], ParameterProperties]
     emission_dims: Optional[Array] = None
     left_padding_dims: Optional[Array] = None
     right_padding_dims: Optional[Array] = None
