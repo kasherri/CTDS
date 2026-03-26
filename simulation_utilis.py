@@ -5,6 +5,17 @@ from typing import Optional, List, Tuple
 from jaxtyping import Float, Array
 from params import ParamsCTDSConstraints,ParamsCTDS,ParamsCTDSEmissions,ParamsCTDSDynamics,ParamsCTDSInitial
 from models import CTDS
+import os
+
+#Plotting Utilis
+def save_figure(exp_group_number, fig, name, section):
+    """Save figure (PNG only) into Experiment Group #/Section <section>/."""
+    folder = os.path.join(f"Exp group {exp_group_number}", f"Section {section}")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"{name}.png")
+    fig.savefig(path, dpi=300, bbox_inches='tight')
+    print(f"  Saved: {path}")
+
 
 
 # ============================================================================

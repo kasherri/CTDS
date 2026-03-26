@@ -549,6 +549,59 @@ class CTDS(SSM):
         iter=m_step_state.iteration + 1
         return ParamsCTDS(initial, dynamics, emissions, constraints=params.constraints, observations=params.observations),  M_Step_State(iter, delta_A, delta_C, delta_Q, delta_R)
     
+  
+    def fit_em(self, 
+            params: ParamsCTDS,
+            batch_emissions: Union[Real[Array, "num_timesteps emission_dim"],
+                                Real[Array, "num_batches num_timesteps emission_dim"]],
+            batch_inputs: Optional[jnp.ndarray] = None,
+            num_iters: int = 100) -> Tuple[ParamsCTDS, jnp.ndarray]:
+        
+        @partial(jax.jit, static_argnums=3)
+        def fit_em_jit(params,batch_emissions , batch_inputs, num_iters):
+            T_total = batch_emissions.shape[0] * batch_emissions.shape[1]
+
+            def em_step(params, m_step_state):
+                batch_stats, lls = jax.vmap(partial(self.e_step, params))(batch_emissions, batch_inputs)
+                lp = lls.sum() / T_total
+                params, m_step_state = self.m_step(params, None, batch_stats, m_step_state)
+                return params, m_step_state, lp
+
+            # Pre-allocate log_probs (NaN = unused slots)
+            log_probs = jnp.full(num_iters, jnp.nan)
+
+            # Iteration 0 (outside loop so log_probs[0] is always filled)
+            m_step_state = self.initialize_m_step_state(params, num_iters, None)
+            params, m_step_state, lp = em_step(params, m_step_state)
+            log_probs = log_probs.at[0].set(lp)
+
+            init_state = (jnp.array(1), params, m_step_state, log_probs, jnp.array(False))
+
+            def cond_fn(state):
+                i, _, _, _, done = state
+                return jnp.logical_and(i < num_iters, jnp.logical_not(done))
+
+            def body_fn(state):
+                i, params, m_step_state, log_probs, _ = state
+                params, m_step_state, lp = em_step(params, m_step_state)
+                log_probs = log_probs.at[i].set(lp)
+
+                prev_lp = log_probs[i - 1]
+                rel_change = jnp.abs(lp - prev_lp) / jnp.maximum(jnp.abs(prev_lp), 1e-10)
+                done = jnp.logical_or(rel_change < 1e-6, jnp.isnan(lp))
+
+                # Optional: host-side debug print (remove for pure speed)
+                jax.debug.print("Iteration {i}: ll={lp}  rel_change={c}", i=i, lp=lp, c=rel_change)
+
+                return (i + 1, params, m_step_state, log_probs, done)
+
+            _, params, _, log_probs, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
+
+            return params, log_probs
+        
+        params, log_probs =fit_em_jit(params,batch_emissions , batch_inputs, num_iters)
+        log_probs = log_probs[~jnp.isnan(log_probs)]
+        return params, log_probs
 
     """
     def fit_em(self, params, batch_emissions, batch_inputs=None, num_iters=100):
@@ -563,6 +616,7 @@ class CTDS(SSM):
 
         (params, m_step_state), log_probs = jax.lax.scan(em_step, (params, m_step_state), None, length=num_iters)
         return params, log_probs
+    """
     """
     def fit_em(self, 
                params: ParamsCTDS,
@@ -580,7 +634,7 @@ class CTDS(SSM):
             #lp = (self.log_prior(params)+ jnp.sum(lls,0))/T_total #wrong unless doing MAP EM
             #lp= jnp.sum(lls,0)/T_total
             batch_stats, lls = jax.vmap(partial(self.e_step, params))(batch_emissions, batch_inputs)
-            lp =  lls.sum() #total log-likelihood across all sequences (not averaged)
+            lp =  lls.sum()/T_total #total log-likelihood across all sequences (not averaged)
             params, m_step_state = self.m_step(params, None, batch_stats, m_step_state)
             return params, m_step_state, lp
 
@@ -601,6 +655,8 @@ class CTDS(SSM):
                 break
 
         return params, jnp.array(log_probs)
+
+    """
    
     def sample(self, params: ParamsCTDS, key: jax.random.PRNGKey, num_timesteps: int, inputs: Optional[jnp.ndarray] = None) -> Tuple[Float[Array, "num_timesteps state_dim"],Float[Array, "num_timesteps emission_dim"]]:
         """
