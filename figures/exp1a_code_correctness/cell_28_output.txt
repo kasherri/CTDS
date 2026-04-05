@@ -1,0 +1,9 @@
+
+══════════════════════════════════════════════════════════════════════
+  D.7: Overcomplete D > N
+══════════════════════════════════════════════════════════════════════
+  [PASS] D>N sample OK
+  [PASS] D>N states: NaN=False, Inf=False
+  [PASS] D>N E-step OK, LL=-80.38
+
+  D.7 Overall: PASS

@@ -1,0 +1,10 @@
+
+══════════════════════════════════════════════════════════════════════
+  D.3: Nearly Singular R
+══════════════════════════════════════════════════════════════════════
+  [PASS] E-step with tiny R: no crash
+  [PASS] tinyR.Mt_1: NaN=False, Inf=False
+  [PASS] tinyR.Mdelta: NaN=False, Inf=False
+  [PASS] tinyR.M2_T: NaN=False, Inf=False
+
+  D.3 Overall: PASS

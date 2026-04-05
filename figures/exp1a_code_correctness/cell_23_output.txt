@@ -1,0 +1,11 @@
+
+══════════════════════════════════════════════════════════════════════
+  D.2: Nearly Singular Q
+══════════════════════════════════════════════════════════════════════
+  [PASS] Q_floored min eig = 1.00e-04 (>= 1e-4)
+  [PASS] E-step with tiny Q: no crash
+  [PASS] tinyQ.Mt_1: NaN=False, Inf=False
+  [PASS] tinyQ.Mdelta: NaN=False, Inf=False
+  [PASS] tinyQ.M2_T: NaN=False, Inf=False
+
+  D.2 Overall: PASS

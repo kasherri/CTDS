@@ -1,0 +1,9 @@
+
+══════════════════════════════════════════════════════════════════════
+  C.4: Gauge Fixing Preserves Signs
+══════════════════════════════════════════════════════════════════════
+  [PASS] A violations after gauge fix: 0
+  [PASS] C negative entries after gauge fix: 0.0
+  [PASS] A violations after 10x gauge fix: 0
+
+  C.4 Overall: PASS

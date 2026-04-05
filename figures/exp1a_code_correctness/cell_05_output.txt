@@ -1,0 +1,9 @@
+
+══════════════════════════════════════════════════════════════════════
+  A.4: Determinism
+══════════════════════════════════════════════════════════════════════
+  [PASS] Same seed → identical states
+  [PASS] Same seed → identical obs
+  [PASS] Diff seed → different states
+
+  A.4 Overall: PASS

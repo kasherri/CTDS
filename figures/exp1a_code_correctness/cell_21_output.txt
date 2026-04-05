@@ -1,0 +1,11 @@
+
+══════════════════════════════════════════════════════════════════════
+  C.6: Dale's Law Column Signs
+══════════════════════════════════════════════════════════════════════
+  [PASS] seed=0: 0 violations
+  [PASS] seed=17: 0 violations
+  [PASS] seed=34: 0 violations
+  [PASS] seed=51: 0 violations
+  [PASS] seed=68: 0 violations
+
+  C.6 Overall: PASS

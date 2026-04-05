@@ -1,0 +1,12 @@
+
+══════════════════════════════════════════════════════════════════════
+  TEST SUITE COMPLETE
+══════════════════════════════════════════════════════════════════════
+
+Review each section above for individual PASS/FAIL verdicts.
+All figures provide visual evidence of correctness.
+
+Section A: API correctness — shapes, dtypes, determinism, batch aggregation
+Section B: Mathematical correctness — Kalman, sufficient stats, M-step
+Section C: Constraint enforcement — Dale's law, block-diagonal C
+Section D: Numerical stability — edge cases and ill-conditioning

@@ -1,0 +1,11 @@
+
+══════════════════════════════════════════════════════════════════════
+  B.7: C-update NNLS
+══════════════════════════════════════════════════════════════════════
+  Scipy NNLS comparison completed for 20 neurons
+  (Detailed per-row comparison available, see code comments)
+  [PASS] NNLS solver runs without error
+  [PASS] NNLS solver runs without error
+  [PASS] Max KKT residual = 2.48e-13
+
+  B.7 Overall: PASS

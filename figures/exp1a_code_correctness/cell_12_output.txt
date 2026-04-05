@@ -1,0 +1,14 @@
+
+══════════════════════════════════════════════════════════════════════
+  B.5: Batch Suff Stats = Sum Per-Trial
+══════════════════════════════════════════════════════════════════════
+  [PASS] ‖batch - manual‖ for init_Sx0 = 2.29e-16
+  [PASS] ‖batch - manual‖ for init_S0x0T = 1.44e-16
+  [PASS] ‖batch - manual‖ for dyn_Mt1 = 3.95e-13
+  [PASS] ‖batch - manual‖ for dyn_Mdelta = 1.40e-13
+  [PASS] ‖batch - manual‖ for dyn_M2T = 1.66e-13
+  [PASS] ‖batch - manual‖ for em_sum1 = 3.57e-13
+  [PASS] ‖batch - manual‖ for em_sum2 = 5.28e-13
+  [PASS] ‖batch - manual‖ for stat_9 = 5.99e-13
+
+  B.5 Overall: PASS

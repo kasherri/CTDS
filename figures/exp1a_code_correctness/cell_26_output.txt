@@ -1,0 +1,9 @@
+
+══════════════════════════════════════════════════════════════════════
+  D.5: All-Inhibitory Network
+══════════════════════════════════════════════════════════════════════
+  [PASS] A off-diag all <= 0: max=-0.0000
+  [PASS] C non-negative: min=0.0371
+  All-I parameter construction: OK
+
+  D.5 Overall: PASS

@@ -7,6 +7,7 @@ from params import ParamsCTDSConstraints,ParamsCTDS,ParamsCTDSEmissions,ParamsCT
 from models import CTDS
 import os
 
+#TODO: Add update bias term in generate synethic data and in tolggsm()
 #Plotting Utilis
 def save_figure(exp_group_number, fig, name, section):
     """Save figure (PNG only) into Experiment Group #/Section <section>/."""
@@ -338,6 +339,7 @@ def generate_CTDS_Params(
     n_excitatory = int(N * excitatory_fraction)
     n_inhibitory = N - n_excitatory
     
+    
     if K == 2:
         # Standard excitatory/inhibitory setup
         cell_sign = jnp.array([1, -1])  # +1 for excitatory, -1 for inhibitory
@@ -346,9 +348,10 @@ def generate_CTDS_Params(
             jnp.zeros(n_excitatory, dtype=int),  # Excitatory = type 0
             jnp.ones(n_inhibitory, dtype=int)    # Inhibitory = type 1
         ])
+        cell_type_neuron_count=jnp.array([n_excitatory, n_inhibitory])
     else:
         # General multi-type setup
-        cell_sign = jnp.concatenate([jnp.ones(K//2), -jnp.ones(K - K//2)]) #shape: (K,)
+        cell_sign = jnp.concatenate([jnp.ones(K-(K//2)),-jnp.ones(K//2)]) #shape: (K,)
         dims_per_type = D // K
         cell_type_dimensions = jnp.full(K, dims_per_type) #shape: (K,)
         
@@ -358,15 +361,21 @@ def generate_CTDS_Params(
         
         # Distribute neurons across all cell types
         neurons_per_type = N // K
-        cell_type_mask = jnp.repeat(cell_sign[0], neurons_per_type)
-        
+        cell_type_neuron_count=jnp.full(K, neurons_per_type)
+        #cell_type_mask = jnp.repeat(cell_sign[0], neurons_per_type)
+        cell_type_mask=jnp.repeat(cell_sign, neurons_per_type)
+        #print("cell type mask",cell_type_mask.shape, cell_type_mask)
+        """
         for i in range(1, K):
             if len(cell_type_mask) <= N:
                 cell_type_mask = jnp.concatenate([cell_type_mask, jnp.repeat(cell_sign[i], neurons_per_type)])
+        """
             
         remaining_neurons = N%K
         if remaining_neurons > 0:
             cell_type_mask = jnp.concatenate([cell_type_mask, jnp.repeat(cell_sign[-1], remaining_neurons)])
+            cell_type_neuron_count=cell_type_neuron_count.at[-1].set(cell_type_neuron_count[-1]+remaining_neurons)
+
     
     # Apply Dale's law constraints to create dynamics mask
     dynamics_list = []
@@ -383,7 +392,7 @@ def generate_CTDS_Params(
     col_start = 0
     for i in range(len(cell_types)):
         #get the number of neurons for this cell type
-        N_type = jnp.sum(jnp.where(cell_type_mask == cell_types[i], 1, 0))
+        N_type = cell_type_neuron_count[i]
         D_type = cell_type_dimensions[i]
         C_type=jr.uniform(keysC[i], (N_type, D_type), minval=0.0, maxval=1.0)        
         # create padded block: [zeros_left, U, zeros_right]
@@ -475,8 +484,9 @@ def generate_synthetic_data(
         inputs_dim=None,
         state_dim= state_dim,
     )
-
-    states, observations = ctds.sample(ctds_params, key, num_timesteps)
+    keys = jr.split(key, num_samples)
+    states, observations = jax.vmap(lambda k: ctds.sample(ctds_params, k, num_timesteps))(keys)
+    ctds_params=ParamsCTDS(initial=ctds_params.initial, emissions=ctds_params.emissions, dynamics=ctds_params.dynamics, constraints=ctds_params.constraints, observations=observations)
 
     return states, observations, ctds, ctds_params
 

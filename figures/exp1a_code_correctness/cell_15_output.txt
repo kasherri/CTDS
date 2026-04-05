@@ -1,0 +1,10 @@
+
+══════════════════════════════════════════════════════════════════════
+  B.8: Q and R Closed-Form
+══════════════════════════════════════════════════════════════════════
+  ‖Q_mstep - Q_closed_form‖_F = 1.23e-16
+  [PASS] Q agreement (after PSD proj) = 1.23e-16
+  ‖R_mstep - R_closed_form‖_F = 0.00e+00
+  [PASS] R agreement (closed-form) = 0.00e+00
+
+  B.8 Overall: PASS

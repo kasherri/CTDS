@@ -1,0 +1,4 @@
+  [PASS] D>N M-step: NaN=False
+  [PASS] D>N A violations: 0
+
+  D.7 Overall: PASS

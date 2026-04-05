@@ -1,0 +1,22 @@
+
+══════════════════════════════════════════════════════════════════════
+  A.3: NaN/Inf Sentinel
+══════════════════════════════════════════════════════════════════════
+  Normal regime (canonical params):
+  [PASS] init.Sx0: NaN=False, Inf=False
+  [PASS] init.S0x0T: NaN=False, Inf=False
+  [PASS] dyn.Mt_1: NaN=False, Inf=False
+  [PASS] dyn.Mdelta: NaN=False, Inf=False
+  [PASS] dyn.M2_T: NaN=False, Inf=False
+  [PASS] A_new: NaN=False, Inf=False
+  [PASS] C_new: NaN=False, Inf=False
+  [PASS] Q_new: NaN=False, Inf=False
+  [PASS] R_new: NaN=False, Inf=False
+
+  Ill-conditioned regime (tiny Q, large R):
+  [PASS] ill.dyn.Mt_1: NaN=False, Inf=False
+  [PASS] ill.dyn.Mdelta: NaN=False, Inf=False
+  [PASS] ill.dyn.M2_T: NaN=False, Inf=False
+  E-step completed without crash.
+
+  A.3 Overall: PASS

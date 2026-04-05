@@ -351,7 +351,7 @@ class CTDS(SSM):
         U_list=[tup[0] for tup in block_factors]  # list of (N, K) matrices for each cell type
         V_list=[tup[1] for tup in block_factors]  # list of (N, K) matrices for each cell type
         #initial param for CTDSParams
-        initial=ParamsCTDSInitial(mean = jnp.zeros(state_dim), cov = 1 * jnp.eye(state_dim))
+        initial=ParamsCTDSInitial(mean = jnp.zeros(state_dim), cov = 0.1 * jnp.eye(state_dim))
 
         #Initalize emissions
         emissions = self.initialize_emissions(Y.T, U_list, state_dim)
@@ -443,11 +443,11 @@ class CTDS(SSM):
         diag_masks = jnp.ravel(jnp.logical_not(jnp.eye(D, dtype=jnp.bool_)))#D**2 column major vectorization. False
         
         #lb for inhibitory is -jnp.inf and -1e-6 for Excitory  
-        cell_type_lb = jnp.ravel(jnp.tile(jnp.where(params.dynamics.dynamics_mask==-1, -jnp.inf, -1e-6),(D,1))) #D**2 column major vectorization  
+        cell_type_lb = jnp.ravel(jnp.tile(jnp.where(params.dynamics.dynamics_mask==-1, -jnp.inf, 1e-8),(D,1))) #D**2 column major vectorization  
         lb=jnp.where(diag_masks, cell_type_lb,-jnp.inf ) #unconstrained for diagonal entry
 
         #ub for inhibitory is 1e-6 and inf for Excitory
-        cell_type_ub = jnp.ravel(jnp.tile(jnp.where(params.dynamics.dynamics_mask==-1, 1e-6, jnp.inf), (D,1)))
+        cell_type_ub = jnp.ravel(jnp.tile(jnp.where(params.dynamics.dynamics_mask==-1, -1e-8, jnp.inf), (D,1)))
         ub =jnp.where(diag_masks, cell_type_ub,jnp.inf )#unconstrained for diagonal entry
         
         # Quadratic / linear terms

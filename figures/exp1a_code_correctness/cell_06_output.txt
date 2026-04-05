@@ -1,0 +1,10 @@
+
+══════════════════════════════════════════════════════════════════════
+  A.5: Single vs Multi-Trial
+══════════════════════════════════════════════════════════════════════
+  [PASS] Max diff batch vs sequential = 2.27e-13 (< 1e-05)
+  M-step completed on batch stats.
+  [PASS] A_batch: NaN=False, Inf=False
+  [PASS] C_batch: NaN=False, Inf=False
+
+  A.5 Overall: PASS

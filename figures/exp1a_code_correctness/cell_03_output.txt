@@ -1,0 +1,17 @@
+
+══════════════════════════════════════════════════════════════════════
+  A.2: dtype Consistency
+══════════════════════════════════════════════════════════════════════
+  [PASS] A dtype = float64
+  [PASS] Q dtype = float64
+  [PASS] C dtype = float64
+  [PASS] R dtype = float64
+  [PASS] m0 dtype = float64
+  [PASS] S0 dtype = float64
+  [PASS] sampled states dtype = float64
+  [PASS] sampled obs    dtype = float64
+  [PASS] init_stats[0] dtype = float64
+  [PASS] init_stats[1] dtype = float64
+  [PASS] init_stats[2] dtype = int64
+
+  A.2 Overall: PASS

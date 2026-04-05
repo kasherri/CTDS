@@ -1,0 +1,9 @@
+
+══════════════════════════════════════════════════════════════════════
+  C.2: Constraint Preservation Over EM
+══════════════════════════════════════════════════════════════════════
+  [PASS] A violations always 0: True
+  [PASS] C violations always 0: True
+  [PASS] Q min eig >= 1e-4: 7.49e-04
+
+  C.2 Overall: PASS

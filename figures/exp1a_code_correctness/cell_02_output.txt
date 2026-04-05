@@ -1,0 +1,50 @@
+
+══════════════════════════════════════════════════════════════════════
+  A.1: Shape Contracts
+══════════════════════════════════════════════════════════════════════
+
+  Config: N=20, D=4, K=2
+  [PASS] A.weights  = (4,4)
+  [PASS] C.weights  = (20,4)
+  [PASS] Q.cov      = (4,4)
+  [PASS] R.cov shape valid
+  [PASS] cell_type_dims sum = D
+  [PASS] cell_type_mask shape = (N,)
+  [PASS] states  shape = (200,4)
+  [PASS] obs     shape = (200,20)
+    E-step log-likelihood: -1794.0173
+
+  Config: N=50, D=8, K=2
+  [PASS] A.weights  = (8,8)
+  [PASS] C.weights  = (50,8)
+  [PASS] Q.cov      = (8,8)
+  [PASS] R.cov shape valid
+  [PASS] cell_type_dims sum = D
+  [PASS] cell_type_mask shape = (N,)
+  [PASS] states  shape = (200,8)
+  [PASS] obs     shape = (200,50)
+    E-step log-likelihood: -2552.7807
+
+  Config: N=30, D=6, K=3
+  [PASS] A.weights  = (6,6)
+  [PASS] C.weights  = (30,6)
+  [PASS] Q.cov      = (6,6)
+  [PASS] R.cov shape valid
+  [PASS] cell_type_dims sum = D
+  [PASS] cell_type_mask shape = (N,)
+  [PASS] states  shape = (200,6)
+  [PASS] obs     shape = (200,30)
+    E-step log-likelihood: -2697.4760
+
+  Config: N=20, D=6, K=3
+  [PASS] A.weights  = (6,6)
+  [PASS] C.weights  = (20,6)
+  [PASS] Q.cov      = (6,6)
+  [PASS] R.cov shape valid
+  [PASS] cell_type_dims sum = D
+  [PASS] cell_type_mask shape = (N,)
+  [PASS] states  shape = (200,6)
+  [PASS] obs     shape = (200,20)
+    E-step log-likelihood: -2167.7672
+
+  A.1 Overall: PASS

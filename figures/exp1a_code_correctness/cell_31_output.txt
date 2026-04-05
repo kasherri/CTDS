@@ -1,0 +1,1 @@
+  [PASS] R min eigenvalue after M-step: 2.00e-09

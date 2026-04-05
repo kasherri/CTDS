@@ -1,0 +1,11 @@
+
+══════════════════════════════════════════════════════════════════════
+  D.6: Unbalanced Cell Counts
+══════════════════════════════════════════════════════════════════════
+  N_e=2, N_i=18
+  [PASS] Sampling OK
+  [PASS] 5 EM iters OK
+  [PASS] A after EM: NaN=False, Inf=False
+  [PASS] A violations: 0
+
+  D.6 Overall: PASS

@@ -1,0 +1,4 @@
+Canonical: N=20, D=4, K=2, D_e=2, D_i=2
+y_canonical shape: (5, 500, 20)
+params A shape: (4, 4)
+params C shape: (20, 4)

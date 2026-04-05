@@ -1,0 +1,16 @@
+
+══════════════════════════════════════════════════════════════════════
+  D.1: Very Short Sequences
+══════════════════════════════════════════════════════════════════════
+  [PASS] T=2 sample: states (2, 4), obs (2, 20)
+  [PASS] T=2 states: NaN=False, Inf=False
+  [PASS] T=2 obs: NaN=False, Inf=False
+  [PASS] T=2 E-step completed, LL=-19.6435
+  [PASS] T=2 A_new: NaN=False, Inf=False
+  [PASS] T=2 C_new: NaN=False, Inf=False
+
+  T=1 (degenerate):
+    T=1 sample succeeded: states (1, 4), obs (1, 20)
+    T=1 E-step succeeded (LL=-11.3006)
+
+  D.1 Overall: PASS

@@ -1,0 +1,8 @@
+
+══════════════════════════════════════════════════════════════════════
+  B.6: A-update Unconstrained = Closed-Form
+══════════════════════════════════════════════════════════════════════
+  [PASS] A recovery error = 4.41e-16
+  A_lds satisfies sign constraints: checked
+
+  B.6 Overall: PASS

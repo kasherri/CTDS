@@ -1,0 +1,10 @@
+
+══════════════════════════════════════════════════════════════════════
+  D.9: Ill-Conditioned Sufficient Stats
+══════════════════════════════════════════════════════════════════════
+  [PASS] T=5: cond=90.8, A_err=0.1970, NaN=False
+  [PASS] T=8: cond=187.7, A_err=0.4273, NaN=False
+  [PASS] T=20: cond=133.7, A_err=0.1707, NaN=False
+  [PASS] T=40: cond=698.7, A_err=0.2473, NaN=False
+
+  D.9 Overall: PASS

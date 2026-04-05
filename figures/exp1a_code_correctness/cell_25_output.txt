@@ -1,0 +1,11 @@
+
+══════════════════════════════════════════════════════════════════════
+  D.4: All-Excitatory Network
+══════════════════════════════════════════════════════════════════════
+  [PASS] All-E sample OK
+  [PASS] A off-diag all >= 0: min=0.0000
+  [PASS] C all >= 0: min=0.0057
+  [PASS] 5 EM iters completed
+  [PASS] A after EM: NaN=False, Inf=False
+
+  D.4 Overall: PASS

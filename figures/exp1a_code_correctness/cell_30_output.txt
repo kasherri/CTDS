@@ -1,0 +1,10 @@
+
+══════════════════════════════════════════════════════════════════════
+  D.8: Zero-Variance Neuron
+══════════════════════════════════════════════════════════════════════
+  [PASS] E-step with zero R row: no crash
+  [PASS] zeroR.Mt_1: NaN=False, Inf=False
+  [PASS] zeroR.Mdelta: NaN=False, Inf=False
+  [PASS] zeroR.M2_T: NaN=False, Inf=False
+
+  D.8 Overall: PASS
