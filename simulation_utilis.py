@@ -172,7 +172,7 @@ def generate_nonnegative_C(N: int, D: int, key: jax.random.PRNGKey,
     
     return C
 
-
+"""
 def generate_synthetic_ssm(D: int, N: int, T: int, 
                            cell_types: jnp.ndarray,
                            cell_sign: jnp.ndarray,
@@ -181,14 +181,7 @@ def generate_synthetic_ssm(D: int, N: int, T: int,
                            key: jax.random.PRNGKey,
                            Q_scale: float = 1e-2,
                            R_scale: float = 1e-3) -> Tuple[ParamsCTDS, jnp.ndarray, jnp.ndarray]:
-    """
-    Generate complete synthetic SSM with data.
-    
-    Returns:
-        params: True parameters
-        latent_states: (T, D) latent trajectory
-        observations: (T, N) observations
-    """
+
     keys = jax.random.split(key, 8)
     
     # Create dynamics mask
@@ -280,6 +273,7 @@ def generate_synthetic_ssm(D: int, N: int, T: int,
     
     
     return ctds, params, latent_states, observations
+"""
 
 def generate_full_rank_matrix(key, T, N):
     """
@@ -441,8 +435,11 @@ def generate_synthetic_data(
     state_dim: int,
     emission_dim: int,
     cell_types: int=2,
-    key: jax.random.PRNGKey = jr.PRNGKey(42)
-) -> Tuple[Float[Array, "num_samples num_timesteps state_dim"],
+    key: jax.random.PRNGKey = jr.PRNGKey(42),
+    excitatory_fraction: float = 0.5,  # Fraction of excitatory neurons
+    noise_level: float = 0.1,  # Observation noise level
+    dynamics_strength: float = 0.8,  # Dynamics eigenvalue magnitude
+    ) -> Tuple[Float[Array, "num_samples num_timesteps state_dim"],
            Float[Array, "num_samples num_timesteps emission_dim"],
            CTDS,
            ParamsCTDS]:
@@ -473,7 +470,10 @@ def generate_synthetic_data(
         T=num_timesteps,
         D=state_dim,
         K=cell_types,
-    )
+        excitatory_fraction=excitatory_fraction,
+        noise_level=noise_level,
+        dynamics_strength=dynamics_strength,
+        seed=key)
     ctds=CTDS(
         emission_dim=emission_dim,
         cell_types=ctds_params.constraints.cell_types,
