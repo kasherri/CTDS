@@ -1,5 +1,6 @@
 #from ast import Tuple
 import jax
+import scipy
 import chex
 from fastprogress.fastprogress import progress_bar
 from typing import Optional, Any, Callable, Tuple, Union
@@ -273,7 +274,7 @@ class CTDS(SSM):
         A=A * dynamics_mask[None, :]
         D=V_dale.shape[1]
 
-        Q=1e-2 * jnp.eye(D)
+        Q=1e-6 * jnp.eye(D)
 
         return ParamsCTDSDynamics(weights=A,cov=Q, dynamics_mask=dynamics_mask)
 
@@ -351,12 +352,15 @@ class CTDS(SSM):
         U_list=[tup[0] for tup in block_factors]  # list of (N, K) matrices for each cell type
         V_list=[tup[1] for tup in block_factors]  # list of (N, K) matrices for each cell type
         #initial param for CTDSParams
-        initial=ParamsCTDSInitial(mean = jnp.zeros(state_dim), cov = 0.1 * jnp.eye(state_dim))
+
 
         #Initalize emissions
         emissions = self.initialize_emissions(Y.T, U_list, state_dim)
         #Initalize dynamics
         dynamics = self.initialize_dynamics(V_list, emissions.weights)
+        
+        init_cov=scipy.linalg.solve_discrete_lyapunov(dynamics.weights, dynamics.cov)
+        initial=ParamsCTDSInitial(mean = jnp.zeros(state_dim), cov = init_cov)
 
         return ParamsCTDS(initial,dynamics, emissions, self.constraints, observations=batch_observations)
     
