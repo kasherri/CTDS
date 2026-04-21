@@ -816,3 +816,7 @@ def pca_initialize_ctds(
     Q0 = _fit_Q_from_pairs(X_prev_list, X_next_list, A0)
 
     return dict(X0=X0, C0=C0, d0=d0, R0=R0, A0=A0, Q0=Q0)
+
+
+
+

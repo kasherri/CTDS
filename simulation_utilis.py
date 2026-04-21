@@ -581,6 +581,25 @@ def transform_true_rec(C_true, C_rec, A_rec, Q_rec, list_of_dimensions, region_i
             dims_prev_cell_types = int(jnp.sum(list_of_dimensions[region, :i])) if i > 0 else 0
             C_this_type = C_this_region[:, dims_prev_cell_types:dims_prev_cell_types+d_e]
             C_rec_this_type = C_rec_this_region[:, dims_prev_cell_types:dims_prev_cell_types+d_e]
+
+            #Debug1: dead columns in recovery matrix
+            col_norms = np.array([float(jnp.linalg.norm(C_rec_this_type[:, k])) for k in range(d_e)])
+            dead = col_norms < 1e-6
+            if dead.any():
+                print(f"  [align DEBUG] cell_type={i}: {dead.sum()}/{d_e} recovered columns are dead (norm<1e-6): norms={col_norms.round(4)}")
+            #Debug 2 fill correlation matrix
+            corr_matrix = np.zeros((d_e, d_e))
+            for j in range(d_e):
+                for k in range(d_e):
+                    corr = pearsonr_jax(C_this_type[:, j], C_rec_this_type[:, k])
+                    corr_matrix[j, k] = float(corr)
+            has_nan = np.isnan(corr_matrix).any()
+            if has_nan or True:   # remove "or True" to only print on failure
+                print(f"  [align DEBUG] cell_type={i} corr_matrix (true_j x rec_k):\n{corr_matrix.round(3)}")
+                if has_nan:
+                    print(f"  [align DEBUG] NaN entries at: {list(zip(*np.where(np.isnan(corr_matrix))))}")
+            
+            
             # Find permutation maximizing correlation
             for j in range(d_e):
                 corrs = []
@@ -592,6 +611,12 @@ def transform_true_rec(C_true, C_rec, A_rec, Q_rec, list_of_dimensions, region_i
                     best_perm + dims_prev_regions + dims_prev_cell_types
                 )
 
+    
+    print(f"  [align DEBUG] permuted_indices: {np.array(permuted_indices)}")
+    # --- DEBUG 3: duplicate assignments (non-bijective) ---
+    if len(set(np.array(permuted_indices))) < len(permuted_indices):
+        print(f"  [align DEBUG] WARNING: duplicate assignments! permuted_indices={np.array(permuted_indices)}")
+    
     # Permute columns/rows
     C_rec = C_rec[:, permuted_indices]
     A_rec = A_rec[permuted_indices][:, permuted_indices]
@@ -603,6 +628,11 @@ def transform_true_rec(C_true, C_rec, A_rec, Q_rec, list_of_dimensions, region_i
     for i in range(total_dims):
         # Least squares fit: minimize ||a * C_rec[:,i] - C_true[:,i]||^2
         a = jnp.sum(C_rec[:, i] * C_true[:, i]) / jnp.sum(C_rec[:, i] ** 2)
+        denom = float(jnp.sum(C_rec[:, i] ** 2))
+
+        # --- DEBUG 4: scaling failures ---
+        if denom <= 1e-8 or abs(a) < 1e-6 or abs(a) > 1e4:
+            print(f"  [align DEBUG] scaling[{i}]: denom={denom:.2e}, a={a:.4f}  ← suspicious")
         scaling_vec = scaling_vec.at[i].set(a)
 
     D_scale = jnp.diag(scaling_vec)
@@ -793,3 +823,279 @@ def transform_true_rec_Numpy(C_true, C_rec, A_rec, Q_rec, list_of_dimensions, re
     Q_rec = (D_inv@Q_rec@D_inv).copy()
     
     return C_rec, A_rec, Q_rec
+
+
+
+
+from scipy.optimize import linear_sum_assignment
+from scipy.stats import pearsonr
+
+
+def _safe_corr(x, y, eps=1e-12):
+    """
+    Pearson correlation that returns NaN if either vector is effectively zero.
+    """
+    x = np.asarray(x).reshape(-1)
+    y = np.asarray(y).reshape(-1)
+
+    nx = np.linalg.norm(x)
+    ny = np.linalg.norm(y)
+    if nx < eps or ny < eps:
+        return np.nan
+
+    c = pearsonr(x, y)[0]
+    return c
+
+
+def transform_true_rec_hungarian(
+    C_true,
+    C_rec,
+    A_rec,
+    Q_rec,
+    list_of_dimensions,
+    region_identity=None,
+    dead_thresh=1e-6,
+    use_abs_corr=True,
+    verbose=True,
+):
+    """
+    Align recovered parameters to true parameters for CTDS using:
+      1. blockwise matching by region and cell type
+      2. one-to-one Hungarian assignment within each block
+      3. per-column scaling after permutation
+
+    Parameters
+    ----------
+    C_true : np.ndarray, shape (N, D)
+        True emission matrix.
+    C_rec : np.ndarray, shape (N, D)
+        Recovered emission matrix.
+    A_rec : np.ndarray, shape (D, D)
+        Recovered dynamics matrix.
+    Q_rec : np.ndarray, shape (D, D)
+        Recovered process covariance.
+    list_of_dimensions : np.ndarray, shape (num_regions, num_cell_types) or (num_cell_types,)
+        Number of latent dimensions per region x cell type.
+        If 1D, interpreted as a single region.
+    region_identity : np.ndarray, shape (N,), optional
+        Region label for each neuron. If None, assumes one region.
+    dead_thresh : float
+        Threshold below which a recovered column is considered dead.
+    use_abs_corr : bool
+        If True, use absolute correlation for matching.
+    verbose : bool
+        Print diagnostic messages.
+
+    Returns
+    -------
+    result : dict
+        Keys:
+            collapsed : bool
+            reason : str or None
+            permuted_indices : np.ndarray or None
+            scaling_vec : np.ndarray or None
+            C_aligned : np.ndarray or None
+            A_aligned : np.ndarray or None
+            Q_aligned : np.ndarray or None
+    """
+    C_true = np.asarray(C_true, dtype=float)
+    C_rec = np.asarray(C_rec, dtype=float)
+    A_rec = np.asarray(A_rec, dtype=float)
+    Q_rec = np.asarray(Q_rec, dtype=float)
+
+    list_of_dimensions = np.asarray(list_of_dimensions)
+
+    # Allow user to pass shape (num_cell_types,) for one region
+    if list_of_dimensions.ndim == 1:
+        list_of_dimensions = list_of_dimensions[None, :]
+
+    num_regions, num_cell_types = list_of_dimensions.shape
+    N, D = C_true.shape
+
+    if region_identity is None:
+        region_identity = np.zeros(N, dtype=int)
+    else:
+        region_identity = np.asarray(region_identity, dtype=int)
+
+    if C_rec.shape != C_true.shape:
+        return {
+            "collapsed": True,
+            "reason": f"shape mismatch: C_true {C_true.shape}, C_rec {C_rec.shape}",
+            "permuted_indices": None,
+            "scaling_vec": None,
+            "C_aligned": None,
+            "A_aligned": None,
+            "Q_aligned": None,
+        }
+
+    permuted_indices = np.full(D, -1, dtype=int)
+
+    # Build blockwise permutation
+    for region in range(num_regions):
+        dims_prev_regions = int(np.sum(list_of_dimensions[:region])) if region > 0 else 0
+        d_region = int(np.sum(list_of_dimensions[region]))
+        neurons_this_region = np.where(region_identity == region)[0]
+
+        C_true_region = C_true[neurons_this_region, dims_prev_regions:dims_prev_regions + d_region]
+        C_rec_region = C_rec[neurons_this_region, dims_prev_regions:dims_prev_regions + d_region]
+
+        if verbose:
+            print(f"[align] region={region}, neurons={len(neurons_this_region)}, latent_dims={d_region}")
+
+        for cell_type in range(num_cell_types):
+            d_block = int(list_of_dimensions[region, cell_type])
+            if d_block == 0:
+                continue
+
+            dims_prev_cell_types = int(np.sum(list_of_dimensions[region, :cell_type])) if cell_type > 0 else 0
+            start = dims_prev_regions + dims_prev_cell_types
+            end = start + d_block
+
+            C_true_block = C_true_region[:, dims_prev_cell_types:dims_prev_cell_types + d_block]
+            C_rec_block = C_rec_region[:, dims_prev_cell_types:dims_prev_cell_types + d_block]
+
+            # Detect dead recovered columns in this block
+            rec_norms = np.linalg.norm(C_rec_block, axis=0)
+            dead_mask = rec_norms < dead_thresh
+            if np.any(dead_mask):
+                reason = (
+                    f"dead recovered columns in region={region}, cell_type={cell_type}; "
+                    f"norms={np.round(rec_norms, 6)}"
+                )
+                if verbose:
+                    print(f"[align] COLLAPSE: {reason}")
+                return {
+                    "collapsed": True,
+                    "reason": reason,
+                    "permuted_indices": None,
+                    "scaling_vec": None,
+                    "C_aligned": None,
+                    "A_aligned": None,
+                    "Q_aligned": None,
+                }
+
+            # Build correlation matrix
+            corr = np.zeros((d_block, d_block), dtype=float)
+            for i in range(d_block):
+                for j in range(d_block):
+                    cij = _safe_corr(C_true_block[:, i], C_rec_block[:, j])
+                    corr[i, j] = cij
+
+            if verbose:
+                print(f"[align] region={region}, cell_type={cell_type}, corr=\n{np.round(corr, 3)}")
+
+            if np.isnan(corr).any():
+                reason = f"NaN correlation matrix in region={region}, cell_type={cell_type}"
+                if verbose:
+                    print(f"[align] COLLAPSE: {reason}")
+                return {
+                    "collapsed": True,
+                    "reason": reason,
+                    "permuted_indices": None,
+                    "scaling_vec": None,
+                    "C_aligned": None,
+                    "A_aligned": None,
+                    "Q_aligned": None,
+                }
+
+            score = np.abs(corr) if use_abs_corr else corr
+
+            # Hungarian assignment: maximize score => minimize negative score
+            row_ind, col_ind = linear_sum_assignment(-score)
+
+            # Put recovered columns in the order of true columns
+            local_perm = col_ind[np.argsort(row_ind)]
+            permuted_indices[start:end] = np.arange(start, end)[0] * 0 + (start + local_perm)
+
+            if verbose:
+                print(
+                    f"[align] region={region}, cell_type={cell_type}, "
+                    f"assignment true->rec = {list(zip(range(d_block), local_perm))}"
+                )
+
+    # Check permutation validity
+    if np.any(permuted_indices < 0):
+        reason = f"incomplete permutation assignment: {permuted_indices}"
+        if verbose:
+            print(f"[align] COLLAPSE: {reason}")
+        return {
+            "collapsed": True,
+            "reason": reason,
+            "permuted_indices": permuted_indices,
+            "scaling_vec": None,
+            "C_aligned": None,
+            "A_aligned": None,
+            "Q_aligned": None,
+        }
+
+    if len(np.unique(permuted_indices)) != len(permuted_indices):
+        reason = f"non-bijective permutation: {permuted_indices}"
+        if verbose:
+            print(f"[align] COLLAPSE: {reason}")
+        return {
+            "collapsed": True,
+            "reason": reason,
+            "permuted_indices": permuted_indices,
+            "scaling_vec": None,
+            "C_aligned": None,
+            "A_aligned": None,
+            "Q_aligned": None,
+        }
+
+    # Apply permutation
+    C_perm = C_rec[:, permuted_indices].copy()
+    A_perm = A_rec[permuted_indices][:, permuted_indices].copy()
+    Q_perm = Q_rec[permuted_indices][:, permuted_indices].copy()
+
+    # Per-column scaling
+    scaling_vec = np.ones(D, dtype=float)
+    for i in range(D):
+        denom = np.sum(C_perm[:, i] ** 2)
+        if denom < dead_thresh:
+            reason = f"dead column after permutation at i={i}"
+            if verbose:
+                print(f"[align] COLLAPSE: {reason}")
+            return {
+                "collapsed": True,
+                "reason": reason,
+                "permuted_indices": permuted_indices,
+                "scaling_vec": None,
+                "C_aligned": None,
+                "A_aligned": None,
+                "Q_aligned": None,
+            }
+
+        a = np.sum(C_perm[:, i] * C_true[:, i]) / denom
+        if not np.isfinite(a):
+            reason = f"non-finite scaling at i={i}, denom={denom}, a={a}"
+            if verbose:
+                print(f"[align] COLLAPSE: {reason}")
+            return {
+                "collapsed": True,
+                "reason": reason,
+                "permuted_indices": permuted_indices,
+                "scaling_vec": None,
+                "C_aligned": None,
+                "A_aligned": None,
+                "Q_aligned": None,
+            }
+
+        scaling_vec[i] = a
+
+    # Similarity transform
+    D_scale = np.diag(scaling_vec)
+    D_inv = np.diag(1.0 / scaling_vec)
+
+    C_aligned = C_perm @ D_scale
+    A_aligned = D_inv @ A_perm @ D_scale
+    Q_aligned = D_inv @ Q_perm @ D_inv
+
+    return {
+        "collapsed": False,
+        "reason": None,
+        "permuted_indices": permuted_indices,
+        "scaling_vec": scaling_vec,
+        "C_aligned": C_aligned,
+        "A_aligned": A_aligned,
+        "Q_aligned": Q_aligned,
+    }
