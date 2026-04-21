@@ -117,7 +117,7 @@ class ParamsCTDS(NamedTuple):
         lggsm_emissions = ParamsLGSSMEmissions(
             weights=self.emissions.weights,
             #bias=self.emissions.bias,  # Dynamax expects bias, set to zero
-            bias=jnp.zeros(self.emissions.weights.shape[0]),
+            bias=self.emissions.bias,
             input_weights=None,
             cov=self.emissions.cov
             

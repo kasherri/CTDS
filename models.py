@@ -490,15 +490,21 @@ class CTDS(SSM):
         Y=params.observations.T # shape (N, T)
         Mxx, Ytil, Myy, T_total= emission_stats
         lb,ub= create_emission_bounds(params.constraints, D, N)  #(N,D),(N,D)
+        
+        #Adding bias bounds to lb and ub
+        bias_lb = -jnp.inf * jnp.ones((N, 1))
+        bias_ub =  jnp.inf * jnp.ones((N, 1))
+        lb = jnp.concatenate([lb, bias_lb], axis=1)      # (N, D+1)
+        ub = jnp.concatenate([ub, bias_ub], axis=1)      # (N, D+1)
         #Augmenting suff stats to compute C and offset(d) jointly
-        Mxx_aug=jnp.concatenate([Mxx, jnp.ones((1, D))], axis=0)
-        Mxx_aug=jnp.concatenate([Mxx_aug, jnp.ones((D+1,1))], axis=1) #shape (D+1, D+1)
-        Ytil_aug=jnp.concatenate([Ytil, jnp.ones((1,N))], axis=0) #shape (D+1, N)
+        #Mxx_aug=jnp.concatenate([Mxx, jnp.ones((1, D))], axis=0)
+        #Mxx_aug=jnp.concatenate([Mxx_aug, jnp.ones((D+1,1))], axis=1) #shape (D+1, D+1)
+        #Ytil_aug=jnp.concatenate([Ytil, jnp.ones((1,N))], axis=0) #shape (D+1, N)
         vmap_solver=jax.vmap(_boxCDQP.run, in_axes=(0, (None,1), (0,0))) 
         C_init=jnp.concatenate([params.emissions.weights, params.emissions.bias[:, None]], axis=1) #shape (N, D+1)
-        Ctill=vmap_solver(C_init, ( (2.0 *Mxx_aug + 1e-9*jnp.eye(D+1)), -2.0 *Ytil_aug), (lb, ub)).params
-        C=Ctill[:,:-1]
-        bias=Ctill[:,-1]
+        Ctil=vmap_solver(C_init, ( (2.0 *Mxx + 1e-9*jnp.eye(D+1)), -2.0 *Ytil), (lb, ub)).params
+        C=Ctil[:,:-1]
+        bias=Ctil[:,-1]
         delta_C = m_step_state.delta_C.at[m_step_state.iteration].set(jnp.linalg.norm(C - params.emissions.weights))
 
         #---------Update R----------------------------
@@ -523,7 +529,7 @@ class CTDS(SSM):
         R = jnp.diag(R_diag) # shape (N, N)
         """
         
-        R1=(1/T_total) * (( (Myy) - (C @ Ytil) -(Ytil.T @ C.T) +(C @ Mxx @ C.T)) ) #shape (N, N)
+        R1=(1/T_total) * (( (Myy) - (Ctil @ Ytil) -(Ytil.T @ Ctil.T) +(Ctil @ Mxx @ Ctil.T)) ) #shape (N, N)
         R=jnp.diag(jnp.diag(R1)) #force R to be diagonal
         
         """
@@ -592,7 +598,7 @@ class CTDS(SSM):
 
                 prev_lp = log_probs[i - 1]
                 rel_change = jnp.abs(lp - prev_lp) / jnp.maximum(jnp.abs(prev_lp), 1e-10)
-                done = jnp.logical_or(rel_change < 1e-6, jnp.isnan(lp))
+                done = jnp.logical_or(rel_change < 1e-10, jnp.isnan(lp))
 
                 # Optional: host-side debug print (remove for pure speed)
                 jax.debug.print("Iteration {i}: ll={lp}  rel_change={c}", i=i, lp=lp, c=rel_change)

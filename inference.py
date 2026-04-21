@@ -115,7 +115,7 @@ class DynamaxLGSSMBackend:
         """
         Compute expected sufficient statistics and marginal log likelihood using the smoother.
         """
-        lggsm=LinearGaussianSSM(params.dynamics.weights.shape[0], params.emissions.weights.shape[0],0, False, False)
+        lggsm=LinearGaussianSSM(params.dynamics.weights.shape[0], params.emissions.weights.shape[0],0, has_dynamics_bias=False, has_emissions_bias=True)
         stats, loglik = lggsm.e_step(params.to_lgssm(), emissions, inputs)
         #posterior = lgssm_smoother(params.to_lgssm(), emissions, inputs)
         #stats = compute_sufficient_statistics(posterior, emissions)
