@@ -135,6 +135,26 @@ def _gauge_fix_clamped(A: chex.Array, C: chex.Array, Q: chex.Array,
     Q = _psd_project(Q, q_floor)                            # re-floor after similarity
     return A, C, Q
 
+
+def gauge_fix(params):
+    C = params.emissions.weights      # (N, D)
+    A = params.dynamics.weights       # (D, D)
+    Q = params.dynamics.cov           # (D, D)
+    
+    # Compute scale of each latent column of C
+    col_norms = jnp.linalg.norm(C, axis=0)           # (D,)
+    col_norms = jnp.maximum(col_norms, 1e-6)         # avoid div by zero
+    S     = jnp.diag(col_norms)                       # S
+    S_inv = jnp.diag(1.0 / col_norms)                # S^{-1}
+    
+    # Apply gauge transform: C -> CS^{-1}, A -> SAS^{-1}, Q -> SQS
+    C_fixed = C @ S_inv
+    A_fixed = S @ A @ S_inv
+    Q_fixed = S @ Q @ S
+    
+    dynamics  = params.dynamics._replace(weights=A_fixed, cov=Q_fixed)
+    emissions = params.emissions._replace(weights=C_fixed)
+    return dynamics, emissions
 #maybe later implement as subclass of dynamax SSM. right now dont see a reason to do so
 class BaseCTDS(ABC):
     def __init__(self,
@@ -360,7 +380,7 @@ class CTDS(SSM):
         dynamics = self.initialize_dynamics(V_list, emissions.weights)
         
         init_cov=scipy.linalg.solve_discrete_lyapunov(dynamics.weights, dynamics.cov)
-        initial=ParamsCTDSInitial(mean = jnp.zeros(state_dim), cov = init_cov)
+        initial=ParamsCTDSInitial(mean = jnp.zeros(state_dim), cov = init_cov ) #init_cov
 
         return ParamsCTDS(initial,dynamics, emissions, self.constraints, observations=batch_observations)
     
@@ -557,8 +577,9 @@ class CTDS(SSM):
     
 
         iter=m_step_state.iteration + 1
+        params=ParamsCTDS(initial, dynamics, emissions, constraints=params.constraints, observations=params.observations)
+        dynamics, emissions=gauge_fix(params)
         return ParamsCTDS(initial, dynamics, emissions, constraints=params.constraints, observations=params.observations),  M_Step_State(iter, delta_A, delta_C, delta_Q, delta_R)
-    
   
     def fit_em(self, 
             params: ParamsCTDS,
@@ -598,7 +619,7 @@ class CTDS(SSM):
 
                 prev_lp = log_probs[i - 1]
                 rel_change = jnp.abs(lp - prev_lp) / jnp.maximum(jnp.abs(prev_lp), 1e-10)
-                done = jnp.logical_or(rel_change < 1e-10, jnp.isnan(lp))
+                done = jnp.logical_or(rel_change < 1e-6, jnp.isnan(lp))
 
                 # Optional: host-side debug print (remove for pure speed)
                 jax.debug.print("Iteration {i}: ll={lp}  rel_change={c}", i=i, lp=lp, c=rel_change)

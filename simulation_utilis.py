@@ -408,7 +408,7 @@ def generate_CTDS_Params(
     Q=jr.normal(keys[3], (D, D))
     Q = Q.T@Q + jnp.identity(D)
     Q=Q/(jnp.max(Q)*1000)
-    Q = make_Q_true(keys[2], D, target_cond=8.0, scale=6e-3)
+    #Q = make_Q_true(keys[2], D, target_cond=8.0, scale=6e-3)
 
 
     emissions=ParamsCTDSEmissions(weights=C, cov=R, bias=jnp.zeros(N))
