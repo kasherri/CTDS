@@ -97,12 +97,9 @@ notebooks/             # Experiment notebooks
 
 ## Citation
 
-This package was developed as part of a senior thesis. If you use CTDS in your work, please cite:
+This package was developed as part of a senior thesis. 
 
-<!-- TODO: attach thesis PDF and fill in citation details -->
-```
-Njoroge, N. (2026). [Thesis title]. Senior Thesis. [Institution].
-```
+<!-- TODO: will attach thesis PDF or future paper-->
 
 Contact: [njerinjoroge9@gmail.com](mailto:njerinjoroge9@gmail.com)
 
