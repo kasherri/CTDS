@@ -4,34 +4,19 @@ CTDS is a Python package for fitting **Cell-Type Dynamical Systems** — a class
 
 ## Installation
 
-### Requirements
-
-- Python 3.10 or 3.11
-- A working [JAX](https://github.com/google/jax#installation) installation (CPU or GPU)
-
-> **Install JAX first** — the right variant depends on your hardware. Follow the [official JAX install guide](https://github.com/google/jax#installation), then install CTDS.
-
-### Install CTDS
+Requires Python 3.10 or 3.11.
 
 ```bash
-# Clone the repository
 git clone https://github.com/kasherri/ctds.git
 cd ctds
-
-# Install (editable mode recommended for research use)
 pip install -e .
 ```
 
-For development extras (linting, type checking, testing):
+All dependencies (including JAX) are installed automatically. For development extras or notebook support:
 
 ```bash
-pip install -e ".[dev]"
-```
-
-For running the experiment notebooks:
-
-```bash
-pip install -e ".[notebooks]"
+pip install -e ".[dev]"        # linting, type checking, testing
+pip install -e ".[notebooks]"  # Jupyter + plotting libraries
 ```
 
 ### Verify your installation
@@ -41,12 +26,11 @@ import jax
 jax.config.update("jax_enable_x64", True)  # required — see note below
 
 import ctds
-print(ctds.__version__)  # should print 0.1.0
+print(ctds.__version__)  # 0.1.0
 ```
 
 > **Important — 64-bit precision:** JAX defaults to 32-bit floats; CTDS requires 64-bit.
-> Always set `jax.config.update("jax_enable_x64", True)` **before** importing `ctds`,
-> or add it to the top of your script/notebook.
+> Always set `jax.config.update("jax_enable_x64", True)` **before** importing `ctds`.
 
 ## Quickstart
 
