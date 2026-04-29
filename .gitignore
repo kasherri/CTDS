@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# macOS
+.DS_Store
+
+# Cache / scratch
+tier3_cache/
+cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Env
+.venv/
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
