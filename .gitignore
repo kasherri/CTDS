@@ -12,6 +12,15 @@ build/
 # Cache / scratch
 tier3_cache/
 cache/
+figures/tier2_cache/
+*.pkl
+
+# Pytest
+.pytest_cache/
+
+# Generated figures at root
+*.png
+*.pdf
 
 # Jupyter
 .ipynb_checkpoints/

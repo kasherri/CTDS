@@ -4,7 +4,7 @@ Test numerical stability and edge cases.
 import pytest
 import jax
 import jax.numpy as jnp
-from models import CTDS
+from ctds.models import CTDS
 from tests.test_helpers import generate_synthetic_ssm, perturb_params
 
 jax.config.update("jax_enable_x64", True)

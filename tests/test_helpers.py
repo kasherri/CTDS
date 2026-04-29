@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from typing import Tuple, Optional
-from params import ParamsCTDS, ParamsCTDSDynamics, ParamsCTDSEmissions, ParamsCTDSInitial, ParamsCTDSConstraints
+from ctds.params import ParamsCTDS, ParamsCTDSDynamics, ParamsCTDSEmissions, ParamsCTDSInitial, ParamsCTDSConstraints
 
 jax.config.update("jax_enable_x64", True)
 
@@ -218,7 +218,7 @@ def generate_synthetic_ssm(D: int, N: int, T: int,
     
     initial = ParamsCTDSInitial(mean=initial_mean, cov=initial_cov)
     dynamics = ParamsCTDSDynamics(weights=A, cov=Q, dynamics_mask=dynamics_mask)
-    emissions = ParamsCTDSEmissions(weights=C, cov=R)
+    emissions = ParamsCTDSEmissions(weights=C, cov=R, bias=jnp.zeros(N))
     
     params = ParamsCTDS(
         initial=initial,
@@ -273,7 +273,8 @@ def perturb_params(params: ParamsCTDS, key: jax.random.PRNGKey,
     )
     emissions_new = ParamsCTDSEmissions(
         weights=C_new,
-        cov=R_new
+        cov=R_new,
+        bias=params.emissions.bias
     )
     
     return ParamsCTDS(

@@ -373,7 +373,7 @@ def test_A_update_frobenius_stability():
     """After 20 EM iterations, ||A|| should not blow up."""
     import sys
     sys.path.insert(0, '.')
-    from models import CTDS
+    from ctds.models import CTDS
     
     key = jax.random.PRNGKey(0)
     keys = jax.random.split(key, 10)

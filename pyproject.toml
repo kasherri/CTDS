@@ -1,3 +1,63 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ctds"
+version = "0.1.0"
+description = "Cell-Type Dynamical Systems: fitting structured LDS models to neural population data"
+readme = "README.MD"
+requires-python = ">=3.10"
+authors = [
+  { name = "Kashayar Sherafati" },
+]
+keywords = ["neuroscience", "dynamical systems", "jax", "state space models", "dale's law"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+  "jax>=0.4.20",
+  "jaxlib>=0.4.20",
+  "chex>=0.1.85",
+  "jaxtyping>=0.2.25",
+  "jaxopt>=0.8",
+  "optax>=0.1.7",
+  "dynamax>=0.1.4",
+  "tensorflow-probability>=0.23",
+  "scipy>=1.11",
+  "numpy>=1.24",
+  "fastprogress>=1.0",
+  "jax-tqdm>=0.1.4",
+  "matplotlib>=3.7",
+  "seaborn>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-xdist",
+  "ruff",
+  "mypy",
+]
+notebooks = [
+  "jupyter",
+  "ipykernel",
+  "statsmodels",
+  "scikit-learn",
+]
+
+[project.urls]
+Repository = "https://github.com/kasherri/ctds"
+Issues = "https://github.com/kasherri/ctds/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ctds"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
@@ -10,6 +70,17 @@ addopts = [
     "--strict-markers",
 ]
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests as integration tests",
+  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "integration: marks tests as integration tests",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true

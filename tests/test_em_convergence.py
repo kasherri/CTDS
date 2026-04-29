@@ -4,7 +4,7 @@ Test full EM algorithm convergence and parameter recovery.
 import pytest
 import jax
 import jax.numpy as jnp
-from models import CTDS
+from ctds.models import CTDS
 from tests.test_helpers import (
     generate_synthetic_ssm, perturb_params,
     subspace_distance, assert_psd, assert_dale_columns, assert_nonnegative
@@ -218,7 +218,7 @@ def test_em_predictive_performance(parameter_recovery_problem):
     batch_obs = jnp.expand_dims(obs, axis=0)
     
     # Compute initial prediction error
-    from inference import DynamaxLGSSMBackend
+    from ctds.inference import DynamaxLGSSMBackend
     stats_init, _ = DynamaxLGSSMBackend.e_step(params_init, obs, None)
     pred_init = params_init.emissions.weights @ stats_init.latent_mean.T
     mse_init = jnp.mean((pred_init.T - obs)**2)

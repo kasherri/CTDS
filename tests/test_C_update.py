@@ -8,11 +8,11 @@ import numpy as np
 from jax import Array
 from jaxopt import BoxCDQP
 from scipy.optimize import nnls as scipy_nnls
-from test_helpers import (
+from tests.test_helpers import (
     assert_nonnegative, check_kkt_conditions,
     generate_nonnegative_C
 )
-from models import create_emission_bounds
+from ctds.models import create_emission_bounds
 
 jax.config.update("jax_enable_x64", True)
 
@@ -152,7 +152,7 @@ def test_C_update_satisfies_nonnegativity():
 
 def test_emission_bounds_structure():
     """Test that create_emission_bounds produces correct block structure."""
-    from params import ParamsCTDSConstraints
+    from ctds.params import ParamsCTDSConstraints
     
     # Setup: 3 cell types with different latent dimensions
     N = 30  # 10 neurons per cell type
@@ -229,7 +229,7 @@ def test_emission_bounds_structure():
 
 def test_C_update_preserves_block_structure():
     """Test that C update maintains block-diagonal structure with multiple cell types."""
-    from params import ParamsCTDSConstraints
+    from ctds.params import ParamsCTDSConstraints
     
     # Setup: 3 cell types
     N = 30
@@ -318,7 +318,7 @@ def test_C_update_preserves_block_structure():
 
 def test_C_update_nonnegativity_with_bounds():
     """Test that C update respects non-negativity even with tight bounds."""
-    from params import ParamsCTDSConstraints
+    from ctds.params import ParamsCTDSConstraints
     
     N = 15
     D = 6
@@ -383,7 +383,7 @@ def test_C_update_nonnegativity_with_bounds():
 
 def test_C_update_bounds_enforcement():
     """Test that upper bounds of 0 strictly enforce zeros, and inf allows positive values."""
-    from params import ParamsCTDSConstraints
+    from ctds.params import ParamsCTDSConstraints
     
     N = 12
     D = 4
@@ -514,7 +514,7 @@ def visualize_C_block_structure(C: Array, cell_type_mask: Array,
 
 def test_visualize_block_structure():
     """Test the block structure visualization helper."""
-    from params import ParamsCTDSConstraints
+    from ctds.params import ParamsCTDSConstraints
     
     N = 12
     D = 6
@@ -567,7 +567,7 @@ def test_C_update_with_block_constraints():
         jnp.ones(10, dtype=jnp.int32)
     ])
     
-    from params import ParamsCTDSConstraints
+    from ctds.params import ParamsCTDSConstraints
     constraints = ParamsCTDSConstraints(
         cell_types=cell_types,
         cell_sign=cell_sign,

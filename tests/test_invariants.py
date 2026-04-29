@@ -4,7 +4,7 @@ Test structural invariants and constraints after M-step.
 import pytest
 import jax
 import jax.numpy as jnp
-from models import CTDS
+from ctds.models import CTDS
 from tests.test_helpers import (
     assert_psd, assert_dale_columns, assert_nonnegative,
     generate_synthetic_ssm, perturb_params
@@ -76,7 +76,7 @@ def test_shapes_after_m_step(small_synthetic_problem):
     batch_obs = jnp.expand_dims(obs, axis=0)  # (1, T, N)
     
     # Run one EM step
-    from inference import DynamaxLGSSMBackend
+    from ctds.inference import DynamaxLGSSMBackend
     batch_stats, lls = jax.vmap(
         DynamaxLGSSMBackend.e_step, 
         in_axes=(None, 0, None)
@@ -103,7 +103,7 @@ def test_Q_is_psd_after_m_step(small_synthetic_problem):
     
     batch_obs = jnp.expand_dims(obs, axis=0)
     
-    from inference import DynamaxLGSSMBackend
+    from ctds.inference import DynamaxLGSSMBackend
     batch_stats, _ = jax.vmap(
         DynamaxLGSSMBackend.e_step,
         in_axes=(None, 0, None)
@@ -127,7 +127,7 @@ def test_R_is_psd_after_m_step(small_synthetic_problem):
     
     batch_obs = jnp.expand_dims(obs, axis=0)
     
-    from inference import DynamaxLGSSMBackend
+    from ctds.inference import DynamaxLGSSMBackend
     batch_stats, _ = jax.vmap(
         DynamaxLGSSMBackend.e_step,
         in_axes=(None, 0, None)
@@ -151,7 +151,7 @@ def test_dale_constraints_on_A(small_synthetic_problem):
     
     batch_obs = jnp.expand_dims(obs, axis=0)
     
-    from inference import DynamaxLGSSMBackend
+    from ctds.inference import DynamaxLGSSMBackend
     batch_stats, _ = jax.vmap(
         DynamaxLGSSMBackend.e_step,
         in_axes=(None, 0, None)
@@ -176,7 +176,7 @@ def test_C_nonnegative(small_synthetic_problem):
     
     batch_obs = jnp.expand_dims(obs, axis=0)
     
-    from inference import DynamaxLGSSMBackend
+    from ctds.inference import DynamaxLGSSMBackend
     batch_stats, _ = jax.vmap(
         DynamaxLGSSMBackend.e_step,
         in_axes=(None, 0, None)
@@ -200,7 +200,7 @@ def test_no_nans_after_m_step(small_synthetic_problem):
     
     batch_obs = jnp.expand_dims(obs, axis=0)
     
-    from inference import DynamaxLGSSMBackend
+    from ctds.inference import DynamaxLGSSMBackend
     batch_stats, _ = jax.vmap(
         DynamaxLGSSMBackend.e_step,
         in_axes=(None, 0, None)
@@ -225,7 +225,7 @@ def test_no_infs_after_m_step(small_synthetic_problem):
     
     batch_obs = jnp.expand_dims(obs, axis=0)
     
-    from inference import DynamaxLGSSMBackend
+    from ctds.inference import DynamaxLGSSMBackend
     batch_stats, _ = jax.vmap(
         DynamaxLGSSMBackend.e_step,
         in_axes=(None, 0, None)
@@ -250,7 +250,7 @@ def test_R_diagonal_has_minimum(small_synthetic_problem):
     
     batch_obs = jnp.expand_dims(obs, axis=0)
     
-    from inference import DynamaxLGSSMBackend
+    from ctds.inference import DynamaxLGSSMBackend
     batch_stats, _ = jax.vmap(
         DynamaxLGSSMBackend.e_step,
         in_axes=(None, 0, None)
