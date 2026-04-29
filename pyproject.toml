@@ -6,10 +6,10 @@ build-backend = "hatchling.build"
 name = "ctds"
 version = "0.1.0"
 description = "Cell-Type Dynamical Systems: fitting structured LDS models to neural population data"
-readme = "README.MD"
+readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-  { name = "Kashayar Sherafati" },
+  { name = "Njeri Njoroge", email = "njerinjoroge9@gmail.com" },
 ]
 keywords = ["neuroscience", "dynamical systems", "jax", "state space models", "dale's law"]
 classifiers = [
