@@ -6,6 +6,7 @@ from fastprogress.fastprogress import progress_bar
 from typing import Optional, Any, Callable, Tuple, Union
 from jaxtyping import Array, Float, Real
 import jax.numpy as jnp
+from dynamax.linear_gaussian_ssm.inference import lgssm_smoother
 from .params import ParamsCTDS, SufficientStats, ParamsCTDSDynamics, ParamsCTDSEmissions, ParamsCTDSInitial, ParamsCTDSConstraints, M_Step_State
 from abc import ABC, abstractmethod
 from .inference import InferenceBackend, DynamaxLGSSMBackend
@@ -402,7 +403,59 @@ class CTDS(SSM):
                 - latent_second_moment: Posterior second moments (T, D, D)
                 - cross_time_moment: Cross-covariances between consecutive latent states (T-1, D, D)
         """
-        return DynamaxLGSSMBackend.e_step(params, emissions, inputs)
+        num_timesteps = emissions.shape[0]
+        D=params.dynamics.weights.shape[0]
+        #TODO: Jax cond for inputs
+        inputs = jnp.zeros((num_timesteps, 0)) #assuming inputs are none for now
+      
+
+        # Run the smoother to get posterior expectations
+        posterior = lgssm_smoother(params.to_lgssm(), emissions, inputs)
+
+        # shorthand
+        Ex = posterior.smoothed_means
+        Exp = posterior.smoothed_means[:-1]
+        Exn = posterior.smoothed_means[1:]
+        Vx = posterior.smoothed_covariances
+        Vxp = posterior.smoothed_covariances[:-1]
+        Vxn = posterior.smoothed_covariances[1:]
+        Expxn = posterior.smoothed_cross_covariances
+
+        # Append bias to the inputs
+        inputs = jnp.concatenate((inputs, jnp.ones((num_timesteps, 1))), axis=1)
+        up = inputs[:-1]
+        u = inputs
+        y = emissions
+
+        # expected sufficient statistics for the initial tfd.Distribution
+        Ex0 = posterior.smoothed_means[0]
+        Ex0x0T = posterior.smoothed_covariances[0] + jnp.outer(Ex0, Ex0)
+        init_stats = (Ex0, Ex0x0T, 1) 
+
+        # expected sufficient statistics for the dynamics tfd.Distribution
+        # let zp[t] = [x[t], u[t]] for t = 0...T-2
+        # let xn[t] = x[t+1]          for t = 0...T-2
+        sum_zpzpT = jnp.block([[Exp.T @ Exp, Exp.T @ up], [up.T @ Exp, up.T @ up]]) #Mt_1
+        sum_zpzpT = sum_zpzpT.at[:D, :D].add(Vxp.sum(0)) #Mt_1
+        sum_zpxnT = jnp.block([[Expxn.sum(0)], [up.T @ Exn]]) #Mdelta?
+        sum_xnxnT = Vxn.sum(0) + Exn.T @ Exn #M2_T
+        dynamics_stats = (sum_zpzpT, sum_zpxnT, sum_xnxnT, num_timesteps - 1)
+        
+        #TODO: jax cond for if self.has_dynamics_bias
+        dynamics_stats = (sum_zpzpT[:-1, :-1], sum_zpxnT[:-1, :], sum_xnxnT,num_timesteps - 1) #assuming no dynamics bias
+
+        # more expected sufficient statistics for the emissions
+        # let z[t] = [x[t], u[t]] for t = 0...T-1
+        sum_zzT = jnp.block([[Ex.T @ Ex, Ex.T @ u], [u.T @ Ex, u.T @ u]]) #Mxx
+        sum_zzT = sum_zzT.at[:D, :D].add(Vx.sum(0))
+        sum_zyT = jnp.block([[Ex.T @ y], [u.T @ y]]) #Mxy
+        sum_yyT = emissions.T @ emissions #Myy
+        emission_stats = (sum_zzT, sum_zyT, sum_yyT, num_timesteps)
+        
+        #TODO: jax cond for if self.has_dynamics_bias 
+        # emission_stats = (sum_zzT[:-1, :-1], sum_zyT[:-1, :], sum_yyT, num_timesteps)
+        
+        return (init_stats, dynamics_stats, emission_stats), posterior.marginal_loglik
     
     def initialize_m_step_state(self, params,num_iters, props: Optional[ParamsCTDS]=None):
         return M_Step_State(
@@ -509,6 +562,7 @@ class CTDS(SSM):
         Mxx, Ytil, Myy, T_total= emission_stats
         lb,ub= create_emission_bounds(params.constraints, D, N)  #(N,D),(N,D)
         
+       
         #Adding bias bounds to lb and ub
         bias_lb = -jnp.inf * jnp.ones((N, 1))
         bias_ub =  jnp.inf * jnp.ones((N, 1))
@@ -524,29 +578,8 @@ class CTDS(SSM):
         C=Ctil[:,:-1]
         bias=Ctil[:,-1]
         delta_C = m_step_state.delta_C.at[m_step_state.iteration].set(jnp.linalg.norm(C - params.emissions.weights))
-
+        
         #---------Update R----------------------------
-        """
-        # R = (1/T) * sum_{t=1}^T [ y_t y_t^T - C E[x_t] y_t^T - y_t E[x_t]^T C^T + C E[x_t x_t^T] C^T ]
-        # Efficient reuse + batched quadratic form over time:
-        CEx  = C @ Ex                                                 # (N, T)
-        CExY = CEx @ Y_obs.T                                          # (N, N)
-        YY   = Y_obs @ Y_obs.T                                        # (N, N)
-        # quad = sum_t C E[x_t x_t^T] C^T
-        quad = jnp.einsum('nd,tdk,nk->nn', C, stats.latent_second_moment, C)  # (N, N)
-
-        R = (YY - CExY - CExY.T + quad) / T                           # (N, N)
-        emissions = ParamsCTDSEmissions(weights=C, cov=R)
-        # R= (1 / T) * jnp.sum(Y_obs @ Y_obs.T - C @ Ex @ Y_obs.T - Y_obs @ Ex.T @ C.T + C @ stats.latent_second_moment @ C.T, axis=0) #shape (N, N)
-        
-        
-        # Alternatively, estimate R as diagonal matrix with average residual variance per neuron
-        Y_pred = C @ latent_mean.T  # shape (N, T)
-        resid = Y - Y_pred  # shape (N, T)
-        R_diag = jnp.mean(resid ** 2, axis=1)  # shape (N,)
-        R = jnp.diag(R_diag) # shape (N, N)
-        """
-        
         R1=(1/T_total) * (( (Myy) - (Ctil @ Ytil) -(Ytil.T @ Ctil.T) +(Ctil @ Mxx @ Ctil.T)) ) #shape (N, N)
         R=jnp.diag(jnp.diag(R1)) #force R to be diagonal
         
