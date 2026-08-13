@@ -186,16 +186,23 @@ Top-level container passed to every model method.
 ---
 
 ### Initialization
-
+For NNMF Initialization use the intialize() method of the CTDS class.
 ```python
-from ctds.initialization import fa_initialize_ctds, pca_initialize_ctds
+model = CTDS(
+    emission_dim=N,
+    cell_types=cell_types,
+    cell_sign=cell_sign,
+    cell_type_dimensions=cell_type_dims,
+    cell_type_mask=cell_type_mask,
+)
+init_params=model.initiliaze(observations)
 ```
 
 #### `fa_initialize_ctds`
-
-Factor-analysis-based initialization. Runs per-cell-type FA, then fits constrained $C$ and $A$ via projected gradient descent.
-
+Factor-analysis-based initialization. Runs per-cell-type FA, then fits constrained $C$ and $A$ via projected gradient descent. 
 ```python
+from ctds.initialization import fa_initialize_ctds, pca_initialize_ctds
+
 init = fa_initialize_ctds(
     Y,                      # (B, T, N)  observed data
     e_mask,                 # (N,) bool  excitatory neurons

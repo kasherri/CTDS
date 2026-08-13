@@ -527,10 +527,11 @@ class CTDS(SSM):
         
         # Quadratic / linear terms
         # P_A = (I ⊗ L^T) (M11 ⊗ I) (I ⊗ L) = (M11 ⊗ (L^T L))
-        J0, m0= 1e-9 * jnp.eye(D), 0
+        J0, m0= 0* jnp.eye(D), 0
         h0=m0*jnp.eye(D)
-        P_A= 2.0* jnp.kron(Qtil,(Mt_1+J0).T) #(D^2,D^2 ) 
-        q_A = -2.0 *jnp.ravel(Qtil.T @ Mdelta.T +h0).T#(D^2,)
+        #P_A= 2.0* jnp.kron(Qtil,(Mt_1+J0).T) #(D^2,D^2 ) 
+        P_A= 2.0* (jnp.kron(L, jnp.eye(D)) @ jnp.kron(jnp.eye(D),Mt_1 ) @ jnp.kron(L.T, jnp.eye(D)))
+        q_A = -2.0 * (Qtil.T @ Mdelta.T +h0).reshape(-1, order='C')
         A_init=jnp.ravel(params.dynamics.weights)
         A_vec=_boxCDQP.run(A_init,params_obj=(P_A, q_A),params_ineq=(lb,ub) ).params
         A= jnp.reshape(A_vec, (D,D))
@@ -545,7 +546,7 @@ class CTDS(SSM):
         AS00 = A @ Mt_1
         AS00AT = AS00 @ A.T
         #Q update with Inverse-Wishart prior
-        sqerr= M2_T - (A @ Mdelta) - (Mdelta.T @ A.T) + AS00AT
+        sqerr= (M2_T+ AS00AT) - (A @ Mdelta) - (Mdelta.T @ A.T) 
         v0, psi0= D+0, 0* jnp.eye(D) #hyperparmeters/priors for regularization 
         Q= (sqerr)/( T_d) #No prior
         #hyperparmeters/priors for regularization 
